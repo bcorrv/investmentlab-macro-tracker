@@ -25,11 +25,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r macro_tracker/requirements.txt
 
       - name: Run pipeline
         run: |
-          python main.py
+          python macro_tracker/main.py
 
       - name: Publish snapshot to data repo
         env:
@@ -38,7 +38,7 @@ jobs:
           DATA_REPO: investmentlab-data
         run: |
           git clone https://$TOKEN@github.com/$OWNER/$DATA_REPO.git out
-          cp data/daily_snapshot.csv out/daily_snapshot.csv
+          cp macro_tracker/data/daily_snapshot.csv out/daily_snapshot.csv
           cd out
           git config user.email "actions@github.com"
           git config user.name "github-actions"

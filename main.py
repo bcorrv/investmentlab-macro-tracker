@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import time
 import subprocess
+import json
+from datetime import datetime, timezone
+
 import requests
 import pandas as pd
 
@@ -45,8 +48,15 @@ ALERT_LOG_PATH = Path("alerts.log")
 # UTILS
 # =========================
 def notify_mac(title: str, message: str) -> None:
-    script = f'display notification "{message}" with title "{title}"'
-    subprocess.run(["osascript", "-e", script], check=False)
+    # En GitHub Actions (Linux) 'osascript' no existe. No rompemos el pipeline por alertas locales.
+    if subprocess.call(["uname"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        try:
+            # Sólo intenta en macOS
+            if subprocess.check_output(["uname"], text=True).strip() == "Darwin":
+                script = f'display notification "{message}" with title "{title}"'
+                subprocess.run(["osascript", "-e", script], check=False)
+        except Exception:
+            pass
 
 
 def log_line(path: Path, line: str) -> None:
@@ -66,6 +76,7 @@ def fetch_json_with_retry(url: str, retries: int = 3, sleep_sec: float = 1.5) ->
             time.sleep(sleep_sec * attempt)
     raise RuntimeError(f"Falló fetch tras {retries} intentos: {url}. Último error: {last_err}")
 
+
 def fetch_csv_with_retry(url: str, retries: int = 3, sleep_sec: float = 1.5) -> str:
     last_err = None
     for attempt in range(1, retries + 1):
@@ -84,6 +95,7 @@ def fetch_fred_graph_series(series_id: str, value_name: str) -> pd.DataFrame:
     csv_text = fetch_csv_with_retry(url)
 
     from io import StringIO
+
     df = pd.read_csv(StringIO(csv_text))
 
     # Normaliza nombres
@@ -110,6 +122,36 @@ def fetch_fred_graph_series(series_id: str, value_name: str) -> pd.DataFrame:
     df[value_name] = pd.to_numeric(df[value_name], errors="coerce")
     df = df.dropna(subset=["fecha", value_name]).sort_values("fecha")
     return df
+
+
+def get_git_sha_short() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    except Exception:
+        return "unknown"
+
+
+def write_run_summary(dfs: dict[str, pd.DataFrame], statuses: dict[str, str], out_path: Path = DATA_DIR / "run_summary.json") -> None:
+    summary = {
+        "pipeline_run_utc": datetime.now(timezone.utc).isoformat(),
+        "pipeline_version": get_git_sha_short(),
+        "indicators": {},
+    }
+
+    for ind, df in dfs.items():
+        last_date = None
+        if df is not None and len(df) > 0 and "fecha" in df.columns:
+            last_date = str(df["fecha"].max())
+
+        summary["indicators"][ind] = {
+            "status": statuses.get(ind, "unknown"),
+            "last_date": last_date,
+        }
+
+    out_path.parent.mkdir(exist_ok=True, parents=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
 
 # =========================
 # DATA PIPELINE
@@ -154,7 +196,7 @@ def merge_history(df_old: pd.DataFrame | None, df_new: pd.DataFrame) -> pd.DataF
     return df
 
 
-def process_indicator(indicator: str, cfg: dict) -> pd.DataFrame:
+def process_indicator(indicator: str, cfg: dict, run_log: Path, statuses: dict[str, str]) -> pd.DataFrame:
     value_name = cfg["value_col"]
     hist_path = DATA_DIR / f"{indicator}_daily.csv"
     latest_path = DATA_DIR / f"{indicator}_latest.csv"
@@ -171,17 +213,22 @@ def process_indicator(indicator: str, cfg: dict) -> pd.DataFrame:
 
         df.to_csv(hist_path, index=False, encoding="utf-8")
         pd.DataFrame([df.iloc[-1]]).to_csv(latest_path, index=False, encoding="utf-8")
+
+        statuses[indicator] = "ok"
         return df
 
     except Exception as e:
         # Si falla la fuente, no botamos el pipeline: usamos el histórico (si existe)
         if df_old is not None and len(df_old) > 0:
-            log_line(LOG_DIR / "run.log", f"WARN {indicator}: fetch falló ({type(e).__name__}) usando histórico")
+            msg = f"WARN {indicator}: fetch falló ({type(e).__name__}) usando histórico"
+            log_line(run_log, msg)
             pd.DataFrame([df_old.iloc[-1]]).to_csv(latest_path, index=False, encoding="utf-8")
+            statuses[indicator] = "warn"
             return df_old
 
-        # Si no hay histórico, ahí sí no podemos inventar datos
+        statuses[indicator] = "fail"
         raise
+
 
 # =========================
 # SIGNALS / ALERTS
@@ -283,12 +330,14 @@ def main() -> None:
     run_log = LOG_DIR / "run.log"
     log_line(run_log, "---- RUN START ----")
 
-    # 1) Procesar indicadores
     dfs: dict[str, pd.DataFrame] = {}
+    statuses: dict[str, str] = {}
+
+    # 1) Procesar indicadores
     for ind, cfg in INDICATORS.items():
-        df = process_indicator(ind, cfg)
+        df = process_indicator(ind, cfg, run_log=run_log, statuses=statuses)
         dfs[ind] = df
-        log_line(run_log, f"OK {ind}: {len(df)} filas")
+        log_line(run_log, f"OK {ind}: {len(df)} filas (status={statuses.get(ind)})")
 
     # 2) Snapshot consolidado
     snapshot = build_daily_snapshot(dfs["dolar"], dfs["uf"], dfs["tpm"])
@@ -306,6 +355,10 @@ def main() -> None:
 
     if ALERTS["tpm_change"]["enabled"]:
         check_rate_change(dfs["tpm"], "tpm", "tpm")
+
+    # 4) Resumen del run
+    write_run_summary(dfs, statuses)
+    log_line(run_log, f"OK run_summary: {DATA_DIR / 'run_summary.json'}")
 
     log_line(run_log, "---- RUN END ----")
 

@@ -505,6 +505,24 @@ with tab_sim:
 
     st.plotly_chart(fig, use_container_width=True)
 
+    st.subheader("Contorno — NPV Equity (línea de break-even)")
+
+    figc = px.contour(
+        heat_df,
+        x="Exit",
+        y="EBITDA",
+        z="NPV",
+        contours=dict(
+            showlabels=True,
+            coloring="none",
+            start=0,
+            end=0,
+            size=1
+        ),
+    )
+    figc.update_yaxes(autorange="reversed")
+    st.plotly_chart(figc, use_container_width=True)
+
     # --- Heatmap IRR Equity ---
     heat_data_irr = []
 

@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 
 import requests
 import certifi
+import subprocess
 
 # =========================
 # CONFIG
@@ -122,6 +123,7 @@ def plot_single(dff: pd.DataFrame, value_col: str, title: str, height: int = 520
 # =========================
 df = load_snapshot()
 
+st.write("Commit:", subprocess.check_output(["git","rev-parse","--short","HEAD"]).decode().strip())
 st.title("📊 Investment Lab — Macro Dashboard")
 st.caption(f"Fuente: GitHub RAW | Dataset: {df['fecha'].min().date()} → {df['fecha'].max().date()} | Filas: {len(df)}")
 

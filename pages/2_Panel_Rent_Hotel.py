@@ -291,7 +291,7 @@ with tab_hotel:
 
 with tab_sim:
     st.markdown("## Simulador simple — Decisión de inversión (Hotel)")
-    st.caption("Modelo simple: deuda bullet (principal se paga al final), interés anual, cashflows anuales constantes.")
+    st.caption("Modelo simple: deuda bullet (principal al final), cashflows anuales constantes.")
 
     # ---------
     # Inputs
@@ -299,173 +299,108 @@ with tab_sim:
     i1, i2, i3 = st.columns(3)
 
     with i1:
-        capex = st.number_input("CAPEX total (USD)", min_value=0.0, value=10_000_000.0, step=250_000.0, format="%.2f")
-        years = st.number_input("Horizonte (años)", min_value=3, max_value=20, value=10, step=1)
+        capex = st.number_input("CAPEX total (USD)", min_value=0.0, value=10_000_000.0, step=250_000.0)
+        years = st.number_input("Horizonte (años)", min_value=3, max_value=20, value=10)
 
-        st.subheader("Modelo Operativo (deriva EBITDA)")
+        st.subheader("Modelo Operativo")
 
-        c1, c2, c3, c4 = st.columns(4)
+        rooms = st.number_input("Habitaciones", 10, 800, 120, step=5)
+        occ_pct = st.slider("Ocupación (%)", 30.0, 90.0, 65.0, 0.5)
+        adr = st.number_input("ADR (USD)", 50.0, 3000.0, 250.0, step=10.0)
+        margin_pct = st.slider("Margen EBITDA (%)", 10.0, 70.0, 35.0, 1.0)
 
-        with c1:
-            rooms = st.number_input("Habitaciones", min_value=10, max_value=800, value=120, step=5)
+        occ = occ_pct / 100
+        margin = margin_pct / 100
 
-        with c2:
-            occ_pct = st.slider("Ocupación (%)", min_value=30.0, max_value=90.0, value=65.0, step=0.5)
+        revenue = rooms * adr * occ * 365
+        ebitda = revenue * margin
 
-        with c3:
-            adr = st.number_input("ADR (USD)", min_value=50.0, max_value=3000.0, value=250.0, step=10.0)
-
-        with c4:
-            ebitda_margin_pct = st.slider("Margen EBITDA (%)", min_value=10.0, max_value=70.0, value=35.0, step=1.0)
-
-        occ = occ_pct / 100.0
-        ebitda_margin = ebitda_margin_pct / 100.0
-
-        revpar = adr * occ
-        revenue = revpar * rooms * 365.0
-        ebitda = revenue * ebitda_margin
-
-        st.caption("EBITDA = Habitaciones × Ocupación × ADR × 365 × Margen EBITDA")
         st.metric("EBITDA derivado (USD/año)", f"{ebitda:,.0f}")
 
     with i2:
         debt_pct = st.slider("% Deuda", 0, 80, 55, 5)
-        spread_debt = st.slider("Spread deuda sobre TPM (bps)", 0, 900, 400, 25)  # 400 bps = 4.00%
-        tax = st.slider("Impuesto efectivo (proxy) (%)", 0.0, 35.0, 0.0, 1.0)
+        spread_debt = st.slider("Spread deuda (bps)", 0, 900, 400, 25)
+        tax = st.slider("Impuesto (%)", 0.0, 35.0, 0.0, 1.0)
 
     with i3:
-        cost_equity = st.slider("Costo de Equity (Re) (%)", 6.0, 30.0, 16.0, 0.25)
-        discount = st.slider("Discount rate (hurdle) (%)", 0.0, 25.0, float(hurdle_hotel * 100.0), 0.25)
+        cost_equity = st.slider("Costo Equity (%)", 6.0, 30.0, 16.0, 0.25)
+        discount = st.slider("Discount rate (%)", 0.0, 25.0, float(hurdle_hotel * 100), 0.25)
 
-       # --- Exit base (input usuario) ---
-        exit_method = st.selectbox("Salida", ["Multiple EBITDA", "Cap rate sobre EBITDA"], index=0)
+        exit_method = st.selectbox("Salida", ["Multiple EBITDA", "Cap rate sobre EBITDA"])
 
         if exit_method == "Multiple EBITDA":
-            exit_multiple_base = st.slider("Exit multiple (x EBITDA)", 4.0, 20.0, 10.0, 0.25)
+            exit_multiple_base = st.slider("Exit multiple", 4.0, 20.0, 10.0, 0.25)
             exit_cap_base = None
         else:
             exit_cap_base = st.slider("Exit cap rate (%)", 4.0, 15.0, 9.0, 0.25)
             exit_multiple_base = None
 
-        # --- Macro link ---
-        macro_link = st.checkbox("Vincular Exit a TPM automáticamente", value=True)
+        macro_link = st.checkbox("Vincular Exit a TPM", True)
 
-        tpm_neutral = 4.0         # tasa considerada neutral
-        exit_sensitivity = 0.25   # cuánto se mueve el cap rate por cada 1% TPM extra
+    # ----------------
+    # Ajuste Macro
+    # ----------------
+    tpm_neutral = 4.0
+    sensitivity = 0.25
 
-        if macro_link:
-            if exit_method == "Cap rate sobre EBITDA":
-                exit_cap_adj = exit_cap_base + (tpm - tpm_neutral) * exit_sensitivity
-                exit_multiple_adj = None
-            else:
-                exit_multiple_adj = exit_multiple_base - (tpm - tpm_neutral) * 0.5
-                exit_cap_adj = None
-        else:
-            exit_cap_adj = exit_cap_base
-            exit_multiple_adj = exit_multiple_base
-
-        # --- Visualización del ajuste macro ---
-        if macro_link:
-            if exit_method == "Cap rate sobre EBITDA":
-                st.caption(f"Exit cap ajustado por macro: {exit_cap_adj:.2f}%")
-            else:
-                st.caption(f"Exit multiple ajustado por macro: {exit_multiple_adj:.2f}x")
-
-
-        # --- Rango para heatmap ---
+    if macro_link:
         if exit_method == "Cap rate sobre EBITDA":
-            exit_range = np.linspace((exit_cap_adj - 1.5), (exit_cap_adj + 1.5), 10)
+            exit_cap_adj = exit_cap_base + (tpm - tpm_neutral) * sensitivity
+            exit_multiple_adj = None
         else:
-            exit_range = np.linspace((exit_multiple_adj - 2), (exit_multiple_adj + 2), 10)
+            exit_multiple_adj = exit_multiple_base - (tpm - tpm_neutral) * 0.5
+            exit_cap_adj = None
+    else:
+        exit_cap_adj = exit_cap_base
+        exit_multiple_adj = exit_multiple_base
 
-    # -----------------------
-    # Cálculos (orden fijo)
-    # -----------------------
-    debt = capex * (debt_pct / 100.0)
+    # ----------------
+    # Cálculos
+    # ----------------
+    debt = capex * (debt_pct / 100)
     equity = capex - debt
 
-    # Tasas (en decimal)
-    tax_rate = tax / 100.0
-    disc_rate = discount / 100.0
-    re = cost_equity / 100.0
+    tax_rate = tax / 100
+    disc_rate = discount / 100
+    re = cost_equity / 100
+    debt_rate = tpm + (spread_debt / 10000)
 
-    # debt_rate SIEMPRE se define aquí (no puede faltar)
-    debt_rate = tpm + (spread_debt / 10_000.0)  # bps -> decimal
-    rd = debt_rate
-    d_pct = debt_pct / 100.0
-
-    wacc = calc_wacc(re, rd, d_pct, tax_rate)
-
-    st.divider()
-    stress = st.checkbox("Stress macro (TPM +200 bps, Exit peor, EBITDA -10%)", value=False)
-
-    if stress:
-        debt_rate = debt_rate + 0.02  # +200 bps
-
-        if exit_method == "Cap rate sobre EBITDA" and exit_cap is not None:
-            exit_cap = exit_cap + 1.0  # +100 bps cap rate
-
-        if exit_method == "Multiple EBITDA" and exit_multiple is not None:
-            exit_multiple = max(exit_multiple - 1.0, 1.0)
-
-        ebitda = ebitda * 0.90  # -10% operativo
-
-    # Flujo anual equity (simplificado)
-    ebitda_after_tax = ebitda * (1.0 - tax_rate)
+    ebitda_after_tax = ebitda * (1 - tax_rate)
     interest = debt * debt_rate
     cf_annual = ebitda_after_tax - interest
 
-    # DSCR proxy (EBITDA / interés)
-    dscr = (ebitda / interest) if interest > 0 else float("inf")
-
-    # Exit value
     if exit_method == "Multiple EBITDA":
-        exit_value = ebitda * exit_multiple
+        exit_value = ebitda * exit_multiple_adj
     else:
-        exit_value = ebitda / (exit_cap / 100.0) if exit_cap and exit_cap > 0 else float("nan")
+        exit_value = ebitda / (exit_cap_adj / 100)
 
-    exit_equity = exit_value - debt  # paga principal al final
+    exit_equity = exit_value - debt
 
-    # Cashflows Equity
     cashflows = [-equity] + [cf_annual] * (int(years) - 1) + [cf_annual + exit_equity]
-
-    # Unlevered cashflows (sin deuda)
     cashflows_unlev = [-capex] + [ebitda_after_tax] * (int(years) - 1) + [ebitda_after_tax + exit_value]
 
-    # Métricas
     npv_equity = npv(disc_rate, cashflows)
-    irr_equity = irr(cashflows, guess=max(disc_rate, 0.12) if disc_rate > 0 else 0.12)
+    irr_equity = irr(cashflows)
+    irr_unlev = irr(cashflows_unlev)
 
-    irr_unlev = irr(cashflows_unlev, guess=max(disc_rate, 0.12) if disc_rate > 0 else 0.12)
+    dscr = (ebitda / interest) if interest > 0 else float("inf")
 
-    unlevered_yield = (ebitda / capex) if capex > 0 else float("nan")
-    cash_yield = (cf_annual / equity) if equity > 0 else float("nan")
-
-    # Sensibilidades ±100 bps (discount)
-    npv_disc_up = npv(disc_rate + 0.01, cashflows)
-    npv_disc_dn = npv(max(disc_rate - 0.01, -0.99), cashflows)
-
-    # Sensibilidad deuda +100 bps
-    cf_annual_up_debt = ebitda_after_tax - (debt * (debt_rate + 0.01))
-    cashflows_up_debt = [-equity] + [cf_annual_up_debt] * (int(years) - 1) + [cf_annual_up_debt + exit_equity]
-    npv_debt_up = npv(disc_rate, cashflows_up_debt)
-
-    # -------------
+    # ----------------
     # Output
-    # -------------
-    o1, o2, o3, o4 = st.columns(4)
-    o1.metric("Equity (USD)", fmt_num(equity))
-    o2.metric("Deuda (USD)", fmt_num(debt))
-    o3.metric("Tasa deuda (TPM+spread)", f"{debt_rate*100:.2f}%")
-    o4.metric("WACC (proxy)", f"{wacc*100:.2f}%")
+    # ----------------
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Equity (USD)", f"{equity:,.0f}")
+    c2.metric("Deuda (USD)", f"{debt:,.0f}")
+    c3.metric("Tasa deuda", f"{debt_rate*100:.2f}%")
+    c4.metric("DSCR", f"{dscr:.2f}x")
 
-    o5, o6, o7, o8 = st.columns(4)
-    o5.metric("Discount (hurdle)", f"{disc_rate*100:.2f}%")
-    o6.metric("IRR Equity", "—" if math.isnan(irr_equity) else f"{irr_equity*100:.2f}%")
-    o7.metric("IRR Unlevered", "—" if math.isnan(irr_unlev) else f"{irr_unlev*100:.2f}%")
-    o8.metric("DSCR (EBITDA/Interés)", f"{dscr:.2f}x" if math.isfinite(dscr) else "∞")
+    c5, c6, c7 = st.columns(3)
+    c5.metric("NPV Equity", f"{npv_equity:,.0f}")
+    c6.metric("IRR Equity", f"{irr_equity*100:.2f}%" if not math.isnan(irr_equity) else "—")
+    c7.metric("IRR Unlevered", f"{irr_unlev*100:.2f}%" if not math.isnan(irr_unlev) else "—")
 
     st.divider()
+    st.caption("Modelo disciplinario simplificado — no reemplaza underwriting completo.")
 
     r1, r2, r3, r4 = st.columns(4)
     r1.metric("NPV Equity (USD)", fmt_num(npv_equity))

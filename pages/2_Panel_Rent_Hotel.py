@@ -505,6 +505,41 @@ with tab_sim:
 
     st.plotly_chart(fig, use_container_width=True)
 
+    # --- Heatmap IRR Equity ---
+    heat_data_irr = []
+
+    for e in ebitda_range:
+        for ex in exit_range:
+            if exit_method == "Cap rate sobre EBITDA":
+                ev = e / (ex / 100.0)
+            else:
+                ev = e * ex
+
+            exit_eq = ev - debt
+            cf = e * (1 - tax_rate) - (debt * debt_rate)
+
+            cashflows_temp = [-equity] + [cf] * (int(years) - 1) + [cf + exit_eq]
+            irr_temp = irr(cashflows_temp, guess=max(disc_rate, 0.12) if disc_rate > 0 else 0.12)
+
+            heat_data_irr.append({
+                "EBITDA": e,
+                "Exit": ex,
+                "IRR": irr_temp * 100 if not math.isnan(irr_temp) else float("nan")
+            })
+
+    heat_df_irr = pd.DataFrame(heat_data_irr)
+    pivot_irr = heat_df_irr.pivot(index="EBITDA", columns="Exit", values="IRR")
+
+    fig2 = px.imshow(
+        pivot_irr,
+        color_continuous_scale="RdYlGn",
+        aspect="auto",
+        labels=dict(color="IRR Equity (%)"),
+    )
+    fig2.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig2, use_container_width=True)
+
+
 # Diagnóstico opcional
 with st.expander("Ver tabla del período (últimas 50 filas)"):
     st.dataframe(d.tail(50), use_container_width=True)

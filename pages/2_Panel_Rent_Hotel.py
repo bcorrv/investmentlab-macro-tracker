@@ -289,10 +289,13 @@ with tab_hotel:
 
 with tab_sim:
     st.markdown("## Simulador simple — Decisión de inversión (Hotel)")
-    st.caption("Modelo simple: deuda bullet (se paga al final), interés anual, cashflows anuales constantes.")
+    st.caption("Modelo simple: deuda bullet (principal se paga al final), interés anual, cashflows anuales constantes.")
 
+    # ---------
     # Inputs
+    # ---------
     i1, i2, i3 = st.columns(3)
+
     with i1:
         capex = st.number_input("CAPEX total (USD)", min_value=0.0, value=10_000_000.0, step=250_000.0, format="%.2f")
         ebitda = st.number_input("EBITDA anual estabilizado (USD)", min_value=0.0, value=1_600_000.0, step=50_000.0, format="%.2f")
@@ -301,10 +304,12 @@ with tab_sim:
     with i2:
         debt_pct = st.slider("% Deuda", 0, 80, 55, 5)
         spread_debt = st.slider("Spread deuda sobre TPM (bps)", 0, 900, 400, 25)  # 400 bps = 4.00%
-        discount = st.slider("Discount rate (hurdle) (%)", 0.0, 25.0, float(hurdle_hotel * 100.0), 0.25)
-        cost_equity = st.slider("Costo de Equity (Re) (%)", 6.0, 30.0, 16.0, 0.25)
+        tax = st.slider("Impuesto efectivo (proxy) (%)", 0.0, 35.0, 0.0, 1.0)
 
     with i3:
+        cost_equity = st.slider("Costo de Equity (Re) (%)", 6.0, 30.0, 16.0, 0.25)
+        discount = st.slider("Discount rate (hurdle) (%)", 0.0, 25.0, float(hurdle_hotel * 100.0), 0.25)
+
         exit_method = st.selectbox("Salida", ["Multiple EBITDA", "Cap rate sobre EBITDA"], index=0)
         if exit_method == "Multiple EBITDA":
             exit_multiple = st.slider("Exit multiple (x EBITDA)", 4.0, 20.0, 10.0, 0.25)
@@ -313,35 +318,33 @@ with tab_sim:
             exit_cap = st.slider("Exit cap rate (%)", 4.0, 15.0, 9.0, 0.25)
             exit_multiple = None
 
-        tax = st.slider("Impuesto efectivo (proxy) (%)", 0.0, 35.0, 0.0, 1.0)
-
-    # Cálculos
+    # -----------------------
+    # Cálculos (orden fijo)
+    # -----------------------
     debt = capex * (debt_pct / 100.0)
     equity = capex - debt
+
+    # Tasas (en decimal)
+    tax_rate = tax / 100.0
+    disc_rate = discount / 100.0
     re = cost_equity / 100.0
+
+    # debt_rate SIEMPRE se define aquí (no puede faltar)
+    debt_rate = tpm + (spread_debt / 10_000.0)  # bps -> decimal
     rd = debt_rate
     d_pct = debt_pct / 100.0
+
     wacc = calc_wacc(re, rd, d_pct, tax_rate)
 
-    # tasa deuda
-    debt_rate = tpm + (spread_debt / 10_000.0)  # bps -> decimal
-    disc_rate = discount / 100.0
-    tax_rate = tax / 100.0
-
-    # cashflow anual (equity) – simplificado
+    # Flujo anual equity (simplificado)
     ebitda_after_tax = ebitda * (1.0 - tax_rate)
     interest = debt * debt_rate
     cf_annual = ebitda_after_tax - interest
-    irr_equity = irr(cashflows, guess=disc_rate if disc_rate > 0 else 0.12)
 
-    # Unlevered: sin deuda -> CF = EBITDA after tax, inversión = -CAPEX, exit = exit_value
-    ashflows_unlev = [-capex] + [ebitda_after_tax] * (int(years) - 1) + [ebitda_after_tax + exit_value]
-    irr_unlev = irr(cashflows_unlev, guess=disc_rate if disc_rate > 0 else 0.12)
-
-    # DSCR (muy simplificado: EBITDA / interés)
+    # DSCR proxy (EBITDA / interés)
     dscr = (ebitda / interest) if interest > 0 else float("inf")
 
-    # exit value
+    # Exit value
     if exit_method == "Multiple EBITDA":
         exit_value = ebitda * exit_multiple
     else:
@@ -349,53 +352,58 @@ with tab_sim:
 
     exit_equity = exit_value - debt  # paga principal al final
 
-    # NPV equity
+    # Cashflows Equity
     cashflows = [-equity] + [cf_annual] * (int(years) - 1) + [cf_annual + exit_equity]
-    npv_equity = npv(disc_rate, cashflows)
 
-    # Métricas rápidas
+    # Unlevered cashflows (sin deuda)
+    cashflows_unlev = [-capex] + [ebitda_after_tax] * (int(years) - 1) + [ebitda_after_tax + exit_value]
+
+    # Métricas
+    npv_equity = npv(disc_rate, cashflows)
+    irr_equity = irr(cashflows, guess=max(disc_rate, 0.12) if disc_rate > 0 else 0.12)
+
+    irr_unlev = irr(cashflows_unlev, guess=max(disc_rate, 0.12) if disc_rate > 0 else 0.12)
+
     unlevered_yield = (ebitda / capex) if capex > 0 else float("nan")
     cash_yield = (cf_annual / equity) if equity > 0 else float("nan")
 
-    # Sensibilidades ±100 bps
+    # Sensibilidades ±100 bps (discount)
     npv_disc_up = npv(disc_rate + 0.01, cashflows)
     npv_disc_dn = npv(max(disc_rate - 0.01, -0.99), cashflows)
 
-    # Sensibilidad deuda (sube 100 bps)
+    # Sensibilidad deuda +100 bps
     cf_annual_up_debt = ebitda_after_tax - (debt * (debt_rate + 0.01))
     cashflows_up_debt = [-equity] + [cf_annual_up_debt] * (int(years) - 1) + [cf_annual_up_debt + exit_equity]
     npv_debt_up = npv(disc_rate, cashflows_up_debt)
 
+    # -------------
     # Output
+    # -------------
     o1, o2, o3, o4 = st.columns(4)
     o1.metric("Equity (USD)", fmt_num(equity))
     o2.metric("Deuda (USD)", fmt_num(debt))
     o3.metric("Tasa deuda (TPM+spread)", f"{debt_rate*100:.2f}%")
-    o4.metric("Discount (hurdle)", f"{disc_rate*100:.2f}%")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("WACC (proxy)", f"{wacc*100:.2f}%")
-    m2.metric("IRR Equity", "—" if math.isnan(irr_equity) else f"{irr_equity*100:.2f}%")
-    m3.metric("IRR Unlevered", "—" if math.isnan(irr_unlev) else f"{irr_unlev*100:.2f}%")
+    o4.metric("WACC (proxy)", f"{wacc*100:.2f}%")
 
     o5, o6, o7, o8 = st.columns(4)
-    o5.metric("Unlevered yield (EBITDA/CAPEX)", fmt_pct(unlevered_yield))
-    o6.metric("Cash yield equity (CF/Equity)", fmt_pct(cash_yield))
-    o7.metric("DSCR (EBITDA/Interés)", f"{dscr:.2f}x" if math.isfinite(dscr) else "∞")
-    o8.metric("Exit equity (USD)", fmt_num(exit_equity))
+    o5.metric("Discount (hurdle)", f"{disc_rate*100:.2f}%")
+    o6.metric("IRR Equity", "—" if math.isnan(irr_equity) else f"{irr_equity*100:.2f}%")
+    o7.metric("IRR Unlevered", "—" if math.isnan(irr_unlev) else f"{irr_unlev*100:.2f}%")
+    o8.metric("DSCR (EBITDA/Interés)", f"{dscr:.2f}x" if math.isfinite(dscr) else "∞")
 
     st.divider()
 
-    st.subheader("Resultado (proxy)")
-    r1, r2, r3 = st.columns([1, 1, 2])
+    r1, r2, r3, r4 = st.columns(4)
     r1.metric("NPV Equity (USD)", fmt_num(npv_equity))
     r2.metric("CF anual equity (USD)", fmt_num(cf_annual))
-    with r3:
-        st.write("Sensibilidades (NPV equity):")
-        st.write(f"- Discount +100 bps: **{fmt_num(npv_disc_up)}**")
-        st.write(f"- Discount -100 bps: **{fmt_num(npv_disc_dn)}**")
-        st.write(f"- Deuda +100 bps: **{fmt_num(npv_debt_up)}**")
+    r3.metric("Unlevered yield (EBITDA/CAPEX)", fmt_pct(unlevered_yield))
+    r4.metric("Cash yield equity (CF/Equity)", fmt_pct(cash_yield))
 
-    # Interpretación mínima (disciplina)
+    st.write("**Sensibilidades (NPV equity):**")
+    st.write(f"- Discount +100 bps: **{fmt_num(npv_disc_up)}**")
+    st.write(f"- Discount -100 bps: **{fmt_num(npv_disc_dn)}**")
+    st.write(f"- Deuda +100 bps: **{fmt_num(npv_debt_up)}**")
+
     st.divider()
     st.subheader("Lectura rápida (disciplina)")
 
@@ -406,22 +414,19 @@ with tab_sim:
         bullets.append("🛑 NPV equity negativo al hurdle → no compensa riesgo (o ajusta precio/operación/estructura).")
 
     if dscr < 1.3:
-        bullets.append("⚠️ DSCR bajo (<1.3x) → estructura de deuda agresiva para hotel (sube equity o baja tasa).")
+        bullets.append("⚠️ DSCR bajo (<1.3x) → deuda agresiva para hotel (sube equity o baja tasa).")
     else:
-        bullets.append("✅ DSCR razonable (≥1.3x) para proxy → deuda más defendible.")
+        bullets.append("✅ DSCR razonable (≥1.3x) → deuda más defendible.")
 
     if cash_yield < disc_rate:
         bullets.append("⚠️ Cash yield < hurdle → dependes demasiado del exit/optimismo.")
     else:
-        bullets.append("✅ Cash yield ≥ hurdle → retorno se sostiene mejor sin “rezar por el exit”.")
+        bullets.append("✅ Cash yield ≥ hurdle → retorno más sólido sin “rezar por el exit”.")
 
     for b in bullets:
         st.write(f"- {b}")
 
-    st.caption(
-        "Nota: este simulador es intencionalmente simple (constante, deuda bullet). "
-        "Sirve para disciplina y conversación, no para IC final."
-    )
+    st.caption("Modelo intencionalmente simple. Sirve para disciplina, no reemplaza underwriting completo.")
 
 # Diagnóstico opcional
 with st.expander("Ver tabla del período (últimas 50 filas)"):

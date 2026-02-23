@@ -487,10 +487,36 @@ with tab_sim:
             cashflows_temp = [-equity] + [cf] * (int(years) - 1) + [cf + exit_eq]
             npv_temp = npv(disc_rate, cashflows_temp)
 
+    # -----------------------------
+    # Sensibilidad: NPV Equity + NPV Unlevered
+    # -----------------------------
+    heat_data = []
+
+    for e in ebitda_range:
+        for ex in exit_range:
+
+            # Exit value
+            if exit_method == "Cap rate sobre EBITDA":
+                ev = e / (ex / 100.0)
+            else:
+                ev = e * ex
+
+            # --- Equity CF ---
+            exit_eq = ev - debt
+            cf_eq = e * (1 - tax_rate) - (debt * debt_rate)
+            cfs_eq = [-equity] + [cf_eq] * (int(years) - 1) + [cf_eq + exit_eq]
+            npv_eq = npv(disc_rate, cfs_eq)
+
+            # --- Unlevered CF ---
+            cf_u = e * (1 - tax_rate)
+            cfs_u = [-capex] + [cf_u] * (int(years) - 1) + [cf_u + ev]
+            npv_u = npv(disc_rate, cfs_u)
+
             heat_data.append({
                 "EBITDA": e,
                 "Exit": ex,
-                "NPV": npv_temp
+                "NPV_Equity": npv_eq,
+                "NPV_Unlevered": npv_u,
             })
 
     heat_df = pd.DataFrame(heat_data)

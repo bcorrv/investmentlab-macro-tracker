@@ -563,7 +563,7 @@ with tab_sim:
 
     st.plotly_chart(fig_u, use_container_width=True, key="npv_unlevered_overlay")
 
-    pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV")
+    pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV_Equity")
 
     fig = px.imshow(
         pivot,

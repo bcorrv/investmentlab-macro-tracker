@@ -1,272 +1,395 @@
-# dashboard.py
 from __future__ import annotations
 
-from pathlib import Path
-import datetime as dt
-from io import StringIO
+from datetime import date
+import io
 
-import pandas as pd
-import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-import requests
 import certifi
-import subprocess
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
 
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="Investment Lab — Macro Dashboard", layout="wide")
+OWNER = "bcorrv"
+DATA_REPO = "investmentlab-data"
+BRANCH = "main"
 
-# Repo público de data (RAW)
-DATA_URL = "https://raw.githubusercontent.com/bcorrv/investmentlab-data/main/daily_snapshot.csv"
+SNAPSHOT_URL = f"https://raw.githubusercontent.com/{OWNER}/{DATA_REPO}/{BRANCH}/daily_snapshot.csv"
+RUN_SUMMARY_URL = f"https://raw.githubusercontent.com/{OWNER}/{DATA_REPO}/{BRANCH}/run_summary.json"
 
-INDICATORS = {
-    "USD/CLP": {"col": "usd_clp", "unit": "CLP", "show_ma30": True},
-    "UF": {"col": "uf", "unit": "CLP", "show_ma30": False},
-    "TPM": {"col": "tpm", "unit": "%", "show_ma30": False},
-    "DXY": {"col": "dxy", "unit": "index", "show_ma30": False},
-}
+# “Hurdle” (umbral) para renta/hotel cuando no tienes cap rates / yields reales aún.
+# Esto NO es un cap rate real. Es un proxy de decisión (costo de capital + prima).
+HURDLE_SPREAD_RENTING = 3.0  # puntos porcentuales sobre TPM (ajustable)
+HURDLE_SPREAD_HOTEL = 4.0    # hotel suele exigir prima mayor (ajustable)
 
-PRESETS = {
-    "Personalizado": None,
-    "2018–2019 (pre-pandemia)": (dt.date(2018, 1, 2), dt.date(2019, 12, 31)),
-    "2020 (shock)": (dt.date(2020, 1, 1), dt.date(2020, 12, 31)),
-    "2021–2022 (normalización)": (dt.date(2021, 1, 1), dt.date(2022, 12, 31)),
-    "2023–2024 (tasas altas)": (dt.date(2023, 1, 1), dt.date(2024, 12, 31)),
-    "Últimos 12 meses": "last12m",
-    "Últimos 90 días": "last90d",
-}
+# =========================
+# UI
+# =========================
+st.set_page_config(page_title="Investment Lab — Panel Inmobiliario", layout="wide")
+st.title("Investment Lab — Panel Inmobiliario (Renting + Hotel)")
+
+# =========================
+# DATA LOADERS (robustos para SSL)
+# =========================
+@st.cache_data(ttl=300)
+def _get_text(url: str) -> str:
+    r = requests.get(url, timeout=30, verify=certifi.where())
+    r.raise_for_status()
+    return r.text
+
+@st.cache_data(ttl=300)
+def load_snapshot() -> pd.DataFrame:
+    txt = _get_text(SNAPSHOT_URL)
+    df = pd.read_csv(io.StringIO(txt))
+
+    # Normaliza
+    df.columns = [c.strip() for c in df.columns]
+
+    # Fecha
+    if "fecha" not in df.columns:
+        raise ValueError(f"El snapshot no trae columna 'fecha'. Columnas: {df.columns.tolist()}")
+
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+    df = df.dropna(subset=["fecha"]).sort_values("fecha")
+
+    # Columnas esperadas (si faltan, no rompemos: solo avisamos)
+    for col in ["usd_clp", "uf", "tpm", "dxy"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+@st.cache_data(ttl=300)
+def load_run_summary() -> dict | None:
+    try:
+        txt = _get_text(RUN_SUMMARY_URL)
+        import json
+        return json.loads(txt)
+    except Exception:
+        return None
 
 
 # =========================
 # HELPERS
 # =========================
-@st.cache_data(ttl=300)  # refresca cada 5 min
-def load_snapshot() -> pd.DataFrame:
-    # Descarga via requests + certifi (evita SSL issues de urllib en Python 3.14)
-    r = requests.get(DATA_URL, timeout=30, verify=certifi.where())
-    r.raise_for_status()
-    df = pd.read_csv(StringIO(r.text))
+def clamp_date_range(min_d: date, max_d: date, start_default: date, end_default: date) -> tuple[date, date]:
+    s = max(min_d, start_default)
+    e = min(max_d, end_default)
+    if s > e:
+        s = min_d
+        e = max_d
+    return s, e
 
-    if "fecha" not in df.columns:
-        st.error("El CSV no tiene columna 'fecha'.")
-        st.stop()
+def add_base100(df: pd.DataFrame, col: str, out_col: str) -> pd.DataFrame:
+    d = df.copy()
+    if col not in d.columns:
+        d[out_col] = np.nan
+        return d
+    base = d[col].dropna()
+    if base.empty:
+        d[out_col] = np.nan
+        return d
+    base_val = float(base.iloc[0])
+    if base_val == 0:
+        d[out_col] = np.nan
+        return d
+    d[out_col] = (d[col] / base_val) * 100.0
+    return d
 
-    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-    df = df.dropna(subset=["fecha"]).sort_values("fecha")
+def pct_change(df: pd.DataFrame, col: str, out_col: str) -> pd.DataFrame:
+    d = df.copy()
+    if col not in d.columns:
+        d[out_col] = np.nan
+        return d
+    d[out_col] = d[col].pct_change() * 100.0
+    return d
 
-    # normaliza numéricos
-    for c in ["usd_clp", "uf", "tpm", "dxy", "usd_pct_change", "usd_ma30", "usd_above_ma30"]:
-        if c in df.columns:
-            # usd_above_ma30 podría ser boolean; si falla, lo dejamos
-            if c == "usd_above_ma30":
-                continue
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+def rolling_mean(df: pd.DataFrame, col: str, window: int, out_col: str) -> pd.DataFrame:
+    d = df.copy()
+    if col not in d.columns:
+        d[out_col] = np.nan
+        return d
+    d[out_col] = d[col].rolling(window).mean()
+    return d
 
-    return df
+def safe_last(df: pd.DataFrame, col: str) -> float | None:
+    if col not in df.columns:
+        return None
+    s = df[col].dropna()
+    return float(s.iloc[-1]) if not s.empty else None
 
+def regime_label(tpm: float | None, dxy_base100_delta: float | None, usd_over_ma30: bool | None) -> tuple[str, str]:
+    """
+    Devuelve (titulo, descripcion) para “régimen financiero” con reglas simples.
+    """
+    if tpm is None:
+        return ("Régimen: sin TPM", "No hay TPM disponible para clasificar.")
+    # Regla simple: TPM alta + dólar global fuerte = estrés.
+    # Umbrales razonables iniciales (ajustables):
+    tpm_high = tpm >= 6.0
+    dxy_strong = (dxy_base100_delta is not None) and (dxy_base100_delta >= 3.0)
+    usd_stress = bool(usd_over_ma30) if usd_over_ma30 is not None else False
 
-def fmt_num(x: float | None, unit: str) -> str:
-    if x is None or pd.isna(x):
-        return "—"
-    if unit == "%":
-        return f"{float(x):.2f}%"
-    if unit == "CLP":
-        s = f"{float(x):,.2f}"
-        return s.replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"{float(x):.2f}"
-
-
-def y_range_from_series(series: pd.Series) -> tuple[float, float]:
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if len(s) == 0:
-        return (0.0, 1.0)
-    ymin = float(s.min())
-    ymax = float(s.max())
-    if ymin == ymax:
-        pad = abs(ymin) * 0.02 if ymin != 0 else 1.0
-        return (ymin - pad, ymax + pad)
-    pad = (ymax - ymin) * 0.08
-    return (ymin - pad, ymax + pad)
-
-
-def compute_metrics(dff: pd.DataFrame, value_col: str) -> dict:
-    s = pd.to_numeric(dff[value_col], errors="coerce").dropna()
-    if len(s) == 0:
-        return {"last": None, "avg": None, "min": None, "max": None, "pct_last": None, "vol": None}
-
-    last_ = float(s.iloc[-1])
-    avg_ = float(s.mean())
-    min_ = float(s.min())
-    max_ = float(s.max())
-
-    pct = s.pct_change() * 100.0
-    pct_last = float(pct.iloc[-1]) if pct.dropna().shape[0] > 0 else None
-    vol = float(pct.dropna().std()) if pct.dropna().shape[0] > 2 else None
-
-    return {"last": last_, "avg": avg_, "min": min_, "max": max_, "pct_last": pct_last, "vol": vol}
+    if tpm_high and (dxy_strong or usd_stress):
+        return ("Régimen: ESTRÉS", "Costo de capital alto + USD fuerte. Prioriza liquidez, cobertura FX, pricing conservador.")
+    if (not tpm_high) and (not dxy_strong) and (not usd_stress):
+        return ("Régimen: VENTANA", "Condiciones más benignas. Puedes evaluar timing de compra/financiamiento con mayor agresividad.")
+    return ("Régimen: MIXTO", "Señales cruzadas. Decide por sub-mercado y estructura de deuda; evita apuestas binarias.")
 
 
-def plot_single(dff: pd.DataFrame, value_col: str, title: str, height: int = 520) -> go.Figure:
-    y0, y1 = y_range_from_series(dff[value_col])
+def line_chart(df: pd.DataFrame, x: str, y_cols: list[str], title: str, yaxis_title: str = "") -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=dff["fecha"], y=dff[value_col], mode="lines", name=title))
-    fig.update_yaxes(range=[y0, y1])
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10))
+    for col in y_cols:
+        if col in df.columns:
+            fig.add_trace(go.Scatter(x=df[x], y=df[col], mode="lines", name=col))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Fecha",
+        yaxis_title=yaxis_title,
+        legend_title="Serie",
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+    return fig
+
+def dual_axis_chart(df: pd.DataFrame, x: str, left_col: str, right_col: str, title: str, left_title: str, right_title: str) -> go.Figure:
+    fig = go.Figure()
+
+    if left_col in df.columns:
+        fig.add_trace(go.Scatter(x=df[x], y=df[left_col], name=left_col, mode="lines", yaxis="y1"))
+    if right_col in df.columns:
+        fig.add_trace(go.Scatter(x=df[x], y=df[right_col], name=right_col, mode="lines", yaxis="y2"))
+
+    fig.update_layout(
+        title=title,
+        xaxis=dict(title="Fecha"),
+        yaxis=dict(title=left_title),
+        yaxis2=dict(title=right_title, overlaying="y", side="right"),
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=20),
+        legend_title="Serie",
+    )
     return fig
 
 
 # =========================
-# APP
+# LOAD DATA
 # =========================
 df = load_snapshot()
-
-st.write("Commit:", subprocess.check_output(["git","rev-parse","--short","HEAD"]).decode().strip())
-st.title("📊 Investment Lab — Macro Dashboard")
-st.caption(f"Fuente: GitHub RAW | Dataset: {df['fecha'].min().date()} → {df['fecha'].max().date()} | Filas: {len(df)}")
-
-# --- Selector indicador principal
-selected = st.selectbox("Indicador principal", list(INDICATORS.keys()), index=0)
-cfg = INDICATORS[selected]
-value_col = cfg["col"]
-unit = cfg["unit"]
-
-if value_col not in df.columns:
-    st.error(f"El dataset no tiene columna '{value_col}'. Revisa el CSV publicado.")
-    st.stop()
-
 min_date = df["fecha"].min().date()
 max_date = df["fecha"].max().date()
 
-# --- Presets + rango
-preset_name = st.selectbox("Período", list(PRESETS.keys()), index=0)
+# Panel salud
+run_summary = load_run_summary()
+colA, colB = st.columns([2, 3])
+with colA:
+    st.caption(f"Datos: {SNAPSHOT_URL}")
+with colB:
+    if run_summary and "pipeline_run_utc" in run_summary:
+        st.caption(f"Último run (UTC): {run_summary['pipeline_run_utc']} | versión: {run_summary.get('pipeline_version', 'n/a')}")
+    else:
+        st.caption("Run summary: no disponible (ok si aún no lo publicas).")
 
-if PRESETS[preset_name] == "last12m":
-    start_default = max(min_date, (pd.to_datetime(max_date) - pd.Timedelta(days=365)).date())
-    end_default = max_date
-elif PRESETS[preset_name] == "last90d":
-    start_default = max(min_date, (pd.to_datetime(max_date) - pd.Timedelta(days=90)).date())
-    end_default = max_date
-elif isinstance(PRESETS[preset_name], tuple):
-    start_default, end_default = PRESETS[preset_name]
-    start_default = max(min_date, start_default)
-    end_default = min(max_date, end_default)
-else:
-    start_default, end_default = min_date, max_date
+# Selector de rango
+default_start, default_end = clamp_date_range(
+    min_date, max_date,
+    start_default=date(max(2018, min_date.year), 1, 1),
+    end_default=max_date
+)
 
 start, end = st.date_input(
-    "Rango (ajustable)",
-    value=(start_default, end_default),
+    "Rango de análisis",
+    value=(default_start, default_end),
     min_value=min_date,
     max_value=max_date,
 )
 
-if isinstance(start, (list, tuple)):
-    start, end = start[0], start[1]
+mask = (df["fecha"].dt.date >= start) & (df["fecha"].dt.date <= end)
+d = df.loc[mask].copy().sort_values("fecha")
 
-# --- Filtrado principal
-dff = df[(df["fecha"].dt.date >= start) & (df["fecha"].dt.date <= end)].copy()
-dff = dff.dropna(subset=[value_col]).sort_values("fecha")
+# Enriquecimientos
+d = rolling_mean(d, "usd_clp", 30, "usd_ma30")
+d["usd_above_ma30"] = np.where(d["usd_ma30"].notna() & d["usd_clp"].notna(), d["usd_clp"] > d["usd_ma30"], np.nan)
+d = pct_change(d, "usd_clp", "usd_daily_pct")
+d = pct_change(d, "uf", "uf_daily_pct")
 
-if dff.empty:
-    st.warning("No hay datos para el indicador en ese rango.")
-    st.stop()
+d = add_base100(d, "usd_clp", "usd_base100")
+d = add_base100(d, "dxy", "dxy_base100")
 
-m = compute_metrics(dff, value_col)
-
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric(selected, fmt_num(m["last"], unit))
-c2.metric("% diario", "—" if m["pct_last"] is None else f"{m['pct_last']:.2f}%")
-c3.metric("Promedio", fmt_num(m["avg"], unit))
-c4.metric("Mín / Máx", f"{fmt_num(m['min'], unit)} / {fmt_num(m['max'], unit)}")
-c5.metric("Vol (% diaria)", "—" if m["vol"] is None else f"{m['vol']:.2f}")
-
-# Señal MA30 solo si existe
-if cfg.get("show_ma30") and "usd_ma30" in dff.columns:
-    last_usd = float(dff["usd_clp"].iloc[-1])
-    last_ma = dff["usd_ma30"].iloc[-1]
-    if pd.notna(last_ma):
-        last_ma = float(last_ma)
-        if last_usd > last_ma:
-            st.info("Régimen técnico USD: **sobre MA30**")
-        else:
-            st.success("Régimen técnico USD: **bajo MA30**")
-
-st.subheader(f"{selected} en el período")
-st.plotly_chart(plot_single(dff, value_col, selected), use_container_width=True)
-
-with st.expander("Tabla (últimas 200 filas)"):
-    st.dataframe(dff.tail(200), use_container_width=True)
-
-# =========================
-# COMPARADOR
-# =========================
-st.divider()
-st.subheader("🔀 Comparador de indicadores")
-
-left, right = st.columns(2)
-with left:
-    ind1 = st.selectbox("Indicador 1", list(INDICATORS.keys()), index=0, key="cmp_ind1")
-with right:
-    ind2 = st.selectbox("Indicador 2", list(INDICATORS.keys()), index=1, key="cmp_ind2")
-
-mode = st.radio(
-    "Modo",
-    ["Dos gráficos", "Combinado (2 ejes Y)", "Combinado (normalizado base 100)"],
-    horizontal=True,
-    key="cmp_mode",
-)
-
-col1 = INDICATORS[ind1]["col"]
-col2 = INDICATORS[ind2]["col"]
-
-missing = [c for c in [col1, col2] if c not in df.columns]
-if missing:
-    st.warning(f"No están estas columnas en el CSV publicado: {missing}.")
+# Divergencia “local”: cuánto se mueve USD/CLP vs DXY
+if "usd_base100" in d.columns and "dxy_base100" in d.columns:
+    d["usd_minus_dxy_base100"] = d["usd_base100"] - d["dxy_base100"]
 else:
-    dcomp = df[(df["fecha"].dt.date >= start) & (df["fecha"].dt.date <= end)].copy()
-    dcomp[col1] = pd.to_numeric(dcomp[col1], errors="coerce")
-    dcomp[col2] = pd.to_numeric(dcomp[col2], errors="coerce")
-    dcomp = dcomp.dropna(subset=["fecha", col1, col2]).sort_values("fecha")
+    d["usd_minus_dxy_base100"] = np.nan
 
-    if dcomp.empty:
-        st.warning("No hay datos comunes para ambos indicadores en este rango.")
-    else:
-        if mode == "Dos gráficos":
-            cA, cB = st.columns(2)
-            with cA:
-                st.caption(ind1)
-                st.plotly_chart(plot_single(dcomp, col1, ind1, height=420), use_container_width=True)
-            with cB:
-                st.caption(ind2)
-                st.plotly_chart(plot_single(dcomp, col2, ind2, height=420), use_container_width=True)
+# Para “tendencia TPM” (60 días hábiles aprox)
+if "tpm" in d.columns:
+    d["tpm_change_60"] = d["tpm"] - d["tpm"].shift(60)
+else:
+    d["tpm_change_60"] = np.nan
 
-        elif mode == "Combinado (2 ejes Y)":
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(go.Scatter(x=dcomp["fecha"], y=dcomp[col1], mode="lines", name=ind1), secondary_y=False)
-            fig.add_trace(go.Scatter(x=dcomp["fecha"], y=dcomp[col2], mode="lines", name=ind2), secondary_y=True)
-            fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10))
-            fig.update_yaxes(title_text=ind1, secondary_y=False)
-            fig.update_yaxes(title_text=ind2, secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
+# Hurdles proxy
+if "tpm" in d.columns:
+    d["hurdle_renting"] = d["tpm"] + HURDLE_SPREAD_RENTING
+    d["hurdle_hotel"] = d["tpm"] + HURDLE_SPREAD_HOTEL
+else:
+    d["hurdle_renting"] = np.nan
+    d["hurdle_hotel"] = np.nan
 
-        else:  # Normalizado base 100
-            base1 = float(dcomp[col1].iloc[0])
-            base2 = float(dcomp[col2].iloc[0])
+# =========================
+# EXEC SUMMARY
+# =========================
+st.subheader("Resumen Ejecutivo (Renting + Hotel)")
 
-            if base1 == 0 or base2 == 0:
-                st.warning("No se puede normalizar porque un valor base es 0.")
-            else:
-                dcomp["idx1"] = (dcomp[col1] / base1) * 100.0
-                dcomp["idx2"] = (dcomp[col2] / base2) * 100.0
+usd_last = safe_last(d, "usd_clp")
+uf_last = safe_last(d, "uf")
+tpm_last = safe_last(d, "tpm")
+dxy_last = safe_last(d, "dxy")
+last_dataset_date = d["fecha"].max().date() if not d.empty else None
 
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=dcomp["fecha"], y=dcomp["idx1"], mode="lines", name=f"{ind1} (base 100)"))
-                fig.add_trace(go.Scatter(x=dcomp["fecha"], y=dcomp["idx2"], mode="lines", name=f"{ind2} (base 100)"))
+# DXY delta base100 (rango)
+dxy_base100_delta = None
+if "dxy_base100" in d.columns:
+    s = d["dxy_base100"].dropna()
+    if len(s) >= 2:
+        dxy_base100_delta = float(s.iloc[-1] - s.iloc[0])
 
-                y0, y1 = y_range_from_series(pd.concat([dcomp["idx1"], dcomp["idx2"]], ignore_index=True))
-                fig.update_yaxes(range=[y0, y1])
-                fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+usd_over_ma30 = None
+if "usd_above_ma30" in d.columns:
+    s = d["usd_above_ma30"].dropna()
+    usd_over_ma30 = bool(s.iloc[-1]) if not s.empty else None
+
+reg_title, reg_desc = regime_label(tpm_last, dxy_base100_delta, usd_over_ma30)
+
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Última fecha", str(last_dataset_date) if last_dataset_date else "n/a")
+m2.metric("USD/CLP", f"{usd_last:,.2f}" if usd_last is not None else "n/a")
+m3.metric("UF", f"{uf_last:,.2f}" if uf_last is not None else "n/a")
+m4.metric("TPM", f"{tpm_last:.2f}%" if tpm_last is not None else "n/a")
+m5.metric("DXY", f"{dxy_last:.2f}" if dxy_last is not None else "n/a")
+
+st.markdown(f"**{reg_title}** — {reg_desc}")
+
+# =========================
+# TABS: RENTING vs HOTEL
+# =========================
+tab1, tab2 = st.tabs(["Renting (Renta)", "Hotel (Inversión hotelera)"])
+
+with tab1:
+    st.subheader("Renting — Riesgo macro que mueve yields y demanda")
+
+    # 1) USD vs DXY (base 100)
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        fig = line_chart(
+            d,
+            x="fecha",
+            y_cols=["usd_base100", "dxy_base100"],
+            title="USD/CLP vs DXY (Base 100 en inicio del rango)",
+            yaxis_title="Índice (Base 100)",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        # Divergencia local (proxy riesgo Chile / FX local)
+        div_last = safe_last(d, "usd_minus_dxy_base100")
+        shock_last = safe_last(d, "usd_daily_pct")
+        above_ma = safe_last(d, "usd_above_ma30")
+
+        st.write("**Lecturas rápidas**")
+        if div_last is not None:
+            st.metric("Divergencia USD−DXY (pts)", f"{div_last:.2f}")
+        if shock_last is not None:
+            st.metric("Shock diario USD/CLP (%)", f"{shock_last:.2f}%")
+        if above_ma is not None:
+            st.write(f"USD sobre MA30: **{bool(above_ma)}**")
+
+        st.info(
+            "Si USD/CLP sube mucho más que DXY, suele ser componente local (CLP / riesgo / tasas). "
+            "Eso afecta expectativas y spreads en activos de renta."
+        )
+
+    # 2) TPM + “hurdle renting”
+    fig2 = dual_axis_chart(
+        d,
+        x="fecha",
+        left_col="tpm",
+        right_col="hurdle_renting",
+        title="Costo de capital (TPM) y umbral proxy para renta (TPM + spread)",
+        left_title="TPM (%)",
+        right_title="Hurdle proxy (%)",
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+    st.caption(
+        f"Hurdle proxy Renting = TPM + {HURDLE_SPREAD_RENTING:.1f}%. "
+        "No es cap rate real: es un umbral inicial para disciplinar decisiones."
+    )
+
+    # 3) UF (nivel y variación)
+    fig3 = line_chart(d, x="fecha", y_cols=["uf"], title="UF (nivel)", yaxis_title="UF")
+    st.plotly_chart(fig3, use_container_width=True)
+
+with tab2:
+    st.subheader("Hotel — FX + costo de capital + estrés")
+
+    # 1) Régimen “estrés” (TPM + DXY + USD/MA30)
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        fig = line_chart(
+            d,
+            x="fecha",
+            y_cols=["dxy_base100", "usd_base100"],
+            title="Dólar global vs FX local (Base 100)",
+            yaxis_title="Índice (Base 100)",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        st.write("**Checklist de riesgo hotelero**")
+        if tpm_last is not None:
+            st.metric("TPM actual", f"{tpm_last:.2f}%")
+        if dxy_base100_delta is not None:
+            st.metric("Δ DXY (base100, pts)", f"{dxy_base100_delta:.2f}")
+        if usd_over_ma30 is not None:
+            st.write(f"USD sobre MA30: **{usd_over_ma30}**")
+
+        st.warning(
+            "Hotel: FX pega por demanda internacional + costos (importaciones/insumos) "
+            "+ estructura de deuda. Un régimen de estrés cambia timing y estructura."
+        )
+
+    # 2) TPM + hurdle hotel
+    fig2 = dual_axis_chart(
+        d,
+        x="fecha",
+        left_col="tpm",
+        right_col="hurdle_hotel",
+        title="Costo de capital (TPM) y umbral proxy Hotel (TPM + spread)",
+        left_title="TPM (%)",
+        right_title="Hurdle proxy (%)",
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+    st.caption(
+        f"Hurdle proxy Hotel = TPM + {HURDLE_SPREAD_HOTEL:.1f}%. "
+        "Proxy para disciplinar underwriting mientras no tengas yields/financiamiento real."
+    )
+
+    # 3) “Estrés” visual: USD vs MA30
+    if "usd_clp" in d.columns and "usd_ma30" in d.columns:
+        fig3 = line_chart(
+            d,
+            x="fecha",
+            y_cols=["usd_clp", "usd_ma30"],
+            title="USD/CLP y MA30 (señal de estrés / tendencia)",
+            yaxis_title="CLP por USD",
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+
+# =========================
+# DATA PREVIEW
+# =========================
+with st.expander("Ver datos (preview)"):
+    st.dataframe(d.tail(200), use_container_width=True)

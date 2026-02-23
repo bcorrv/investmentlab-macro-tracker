@@ -378,6 +378,8 @@ with tab_sim:
 
     cashflows = [-equity] + [cf_annual] * (int(years) - 1) + [cf_annual + exit_equity]
     cashflows_unlev = [-capex] + [ebitda_after_tax] * (int(years) - 1) + [ebitda_after_tax + exit_value]
+    irr_unlev = irr(cashflows_unlev, guess=max(disc_rate, 0.12) if disc_rate > 0 else 0.12)
+    npv_unlev = npv(disc_rate, cashflows_unlev)
 
     npv_equity = npv(disc_rate, cashflows)
     irr_equity = irr(cashflows)

@@ -1,5 +1,6 @@
 streamlit
 pandas
-plotly
+plotly>=5.18.0
+numpy
 requests
 certifi

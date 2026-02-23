@@ -456,12 +456,12 @@ with tab_sim:
     # Rango robusto (económicamente lógico)
     # -----------------------------
 
-    # EBITDA ±25%
-    ebitda_range = np.linspace(ebitda * 0.75, ebitda * 1.25, 20)
+    # EBITDA amplio (incluye downside real)
+    ebitda_range = np.linspace(ebitda * 0.5, ebitda * 1.25, 25)
 
     if exit_method == "Multiple EBITDA":
         ex_base = exit_multiple_adj
-        exit_min = max(3.0, ex_base - 4)
+        exit_min = max(2.0, ex_base - 6)
         exit_max = ex_base + 4
     else:
         ex_base = exit_cap_adj

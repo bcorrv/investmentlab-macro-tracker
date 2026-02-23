@@ -320,9 +320,7 @@ with tab_sim:
     equity = capex - debt
     re = cost_equity / 100.0
     rd = debt_rate
-    tax_rate = tax / 100.0
     d_pct = debt_pct / 100.0
-
     wacc = calc_wacc(re, rd, d_pct, tax_rate)
 
     # tasa deuda

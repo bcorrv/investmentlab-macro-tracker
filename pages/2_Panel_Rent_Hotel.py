@@ -428,6 +428,58 @@ with tab_sim:
 
     st.caption("Modelo intencionalmente simple. Sirve para disciplina, no reemplaza underwriting completo.")
 
+    st.divider()
+    st.subheader("Mapa de Sensibilidad — NPV Equity")
+
+    import numpy as np
+    import pandas as pd
+    import plotly.express as px
+
+    # Rango de EBITDA ±20%
+    ebitda_range = np.linspace(ebitda * 0.8, ebitda * 1.2, 10)
+
+    # Rango de exit cap ±150 bps si es cap rate
+    if exit_method == "Cap rate sobre EBITDA":
+        exit_range = np.linspace((exit_cap - 1.5), (exit_cap + 1.5), 10)
+    else:
+        exit_range = np.linspace((exit_multiple - 2), (exit_multiple + 2), 10)
+
+    heat_data = []
+
+    for e in ebitda_range:
+        for ex in exit_range:
+
+            # recalcular exit value
+            if exit_method == "Cap rate sobre EBITDA":
+                ev = e / (ex / 100.0)
+            else:
+                ev = e * ex
+
+            exit_eq = ev - debt
+            cf = e * (1 - tax_rate) - (debt * debt_rate)
+
+            cashflows_temp = [-equity] + [cf] * (int(years) - 1) + [cf + exit_eq]
+            npv_temp = npv(disc_rate, cashflows_temp)
+
+            heat_data.append({
+                "EBITDA": e,
+                "Exit": ex,
+                "NPV": npv_temp
+            })
+
+    heat_df = pd.DataFrame(heat_data)
+
+    fig = px.density_heatmap(
+        heat_df,
+        x="Exit",
+        y="EBITDA",
+        z="NPV",
+        color_continuous_scale="RdYlGn",
+        title="Sensibilidad NPV Equity"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 # Diagnóstico opcional
 with st.expander("Ver tabla del período (últimas 50 filas)"):
     st.dataframe(d.tail(50), use_container_width=True)

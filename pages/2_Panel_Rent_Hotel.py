@@ -450,6 +450,8 @@ with tab_sim:
     st.divider()
     st.subheader("Mapa de Sensibilidad — NPV Equity")
 
+    import plotly.express as px
+
     # -----------------------------
     # Rango robusto (económicamente lógico)
     # -----------------------------

@@ -580,7 +580,7 @@ with tab_sim:
     st.subheader("Mapa NPV Equity + Break-even (NPV = 0)")
 
     # Pivot limpio
-    pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV")
+    pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV_Equity")
 
     pivot.index = pd.to_numeric(pivot.index, errors="coerce")
     pivot.columns = pd.to_numeric(pivot.columns, errors="coerce")

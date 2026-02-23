@@ -521,19 +521,49 @@ with tab_sim:
 
     st.subheader("Contorno — NPV Equity (línea de break-even)")
 
-    figc = px.contour(
-        heat_df,
-        x="Exit",
-        y="EBITDA",
-        z="NPV",
-        contours=dict(
-            showlabels=True,
-            coloring="none",
-            start=0,
-            end=0,
-            size=1
-        ),
+    import plotly.graph_objects as go
+    import numpy as np
+
+    st.subheader("Contorno — Break-even (NPV = 0)")
+
+    # Pivot explícito (asegura formato correcto)
+    pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV")
+
+    # Forzar numéricos
+    pivot.index = pd.to_numeric(pivot.index, errors="coerce")
+    pivot.columns = pd.to_numeric(pivot.columns, errors="coerce")
+
+    pivot = pivot.sort_index()
+    pivot = pivot.loc[:, sorted(pivot.columns)]
+
+    Z = pivot.values.astype(float)
+    X = pivot.columns.values.astype(float)
+    Y = pivot.index.values.astype(float)
+
+    figc = go.Figure(
+        data=go.Contour(
+            z=Z,
+            x=X,
+            y=Y,
+            contours=dict(
+                start=0,
+                end=0,
+                size=1,
+                coloring="none",
+                showlabels=True
+            ),
+            line=dict(width=3),
+        )
     )
+
+    figc.update_yaxes(autorange="reversed")
+    figc.update_layout(
+        xaxis_title="Exit",
+        yaxis_title="EBITDA",
+        height=520
+    )
+
+    st.plotly_chart(figc, use_container_width=True)
     figc.update_yaxes(autorange="reversed")
     st.plotly_chart(figc, use_container_width=True)
 

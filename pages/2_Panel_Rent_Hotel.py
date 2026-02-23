@@ -395,9 +395,35 @@ with tab_sim:
     cashflows_up_debt = [-equity] + [cf_up_debt] * (int(years) - 1) + [cf_up_debt + exit_equity]
     npv_debt_up = npv(disc_rate, cashflows_up_debt)
 
+    # -----------------------
+    # Clasificación del deal
+    # -----------------------
+    hurdle = disc_rate  # ya está en decimal
+
+    def classify_deal(npv_unlev, irr_eq, hurdle, dscr):
+        # Protecciones
+        if npv_unlev is None or not math.isfinite(npv_unlev):
+            return "⚪ SIN CLASIFICAR", "Faltan datos / cálculo inválido"
+
+        irr_ok = (irr_eq is not None) and math.isfinite(irr_eq)
+
+        # Reglas
+        if npv_unlev <= 0 or (irr_ok and irr_eq < hurdle) or dscr < 1.30:
+            return "🔴 OPPORTUNISTIC", "Depende de ejecución perfecta / precio / timing macro"
+        if irr_ok and irr_eq >= (hurdle + 0.02) and dscr >= 1.50:
+            return "🟢 CORE", "Retorno sólido con holgura sobre hurdle y deuda robusta"
+        return "🟡 VALUE-ADD", "Pasa, pero necesitas mejorar operación/estructura para margen de seguridad"
+
+    deal_bucket, deal_reason = classify_deal(npv_unlev, irr_equity, hurdle, dscr)
+
     # ----------------
     # Output
     # ----------------
+
+    st.subheader("Clasificación automática del deal")
+    st.markdown(f"### {deal_bucket}")
+    st.caption(deal_reason)
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Equity (USD)", f"{equity:,.0f}")
     c2.metric("Deuda (USD)", f"{debt:,.0f}")

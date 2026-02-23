@@ -556,6 +556,91 @@ with tab_sim:
         )
     )
 
+    irr_matrix = []
+
+    for e in ebitda_range:
+        row = []
+        for ex in exit_range:
+
+            if exit_method == "Cap rate sobre EBITDA":
+                ev = e / (ex / 100.0)
+            else:
+                ev = e * ex
+
+            exit_eq = ev - debt
+            cf = e * (1 - tax_rate) - (debt * debt_rate)
+
+            cfs = [-equity] + [cf] * (int(years) - 1) + [cf + exit_eq]
+            irr_temp = irr(cfs, guess=disc_rate if disc_rate > 0 else 0.12)
+
+            row.append(irr_temp)
+
+        irr_matrix.append(row)
+
+    Z_irr = np.array(irr_matrix)
+
+    # --- Línea IRR = Hurdle ---
+    fig.add_trace(
+        go.Contour(
+            z=Z_irr,
+            x=exit_range,
+            y=ebitda_range,
+            contours=dict(
+                start=disc_rate,
+                end=disc_rate,
+                size=0.0001,
+                coloring="none",
+            ),
+            line=dict(color="cyan", width=3),
+            showscale=False,
+            name="IRR = Hurdle",
+        )
+    )
+
+    # --- Linea DSCR = 1,3x ---
+    dscr_matrix = []
+
+    for e in ebitda_range:
+        row = []
+        for ex in exit_range:
+            interest_temp = debt * debt_rate
+            dscr_temp = e / interest_temp if interest_temp > 0 else np.nan
+            row.append(dscr_temp)
+        dscr_matrix.append(row)
+
+    Z_dscr = np.array(dscr_matrix)
+
+    # --- Línea DSCR = 1.3x ---
+    fig.add_trace(
+        go.Contour(
+            z=Z_dscr,
+            x=exit_range,
+            y=ebitda_range,
+            contours=dict(
+                start=1.3,
+                end=1.3,
+                size=0.01,
+                coloring="none",
+            ),
+            line=dict(color="orange", width=3),
+            showscale=False,
+            name="DSCR = 1.3x",
+        )
+    )
+
+
+    # --- Punto escenario base ---
+    fig.add_trace(
+        go.Scatter(
+            x=[ex_base],
+            y=[ebitda],
+            mode="markers",
+            marker=dict(size=10, color="white", line=dict(color="black", width=2)),
+            name="Escenario Base",
+            hovertemplate="Escenario Base<br>Exit=%{x:.2f}<br>EBITDA=%{y:,.0f}<extra></extra>",
+        )
+    )
+
     fig.update_layout(
         xaxis_title="Exit",
         yaxis_title="EBITDA",

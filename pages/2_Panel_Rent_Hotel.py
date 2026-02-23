@@ -388,6 +388,13 @@ with tab_sim:
 
     dscr = (ebitda / interest) if interest > 0 else float("inf")
 
+    npv_disc_up = npv(disc_rate + 0.01, cashflows)
+    npv_disc_dn = npv(max(disc_rate - 0.01, -0.99), cashflows)
+
+    cf_up_debt = ebitda_after_tax - (debt * (debt_rate + 0.01))
+    cashflows_up_debt = [-equity] + [cf_up_debt] * (int(years) - 1) + [cf_up_debt + exit_equity]
+    npv_debt_up = npv(disc_rate, cashflows_up_debt)
+
     # ----------------
     # Output
     # ----------------

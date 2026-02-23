@@ -3,8 +3,10 @@ from __future__ import annotations
 import math
 from datetime import date
 
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
 
 # Tu proyecto ya usa esto (lo estás llamando desde esta página)
 from utils_data import load_snapshot, load_run_summary

@@ -30,9 +30,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Pull existing historical data from data repo
+        env:
+          TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          OWNER: bcorrv
+          DATA_REPO: investmentlab-data
+        run: |
+          git clone https://$TOKEN@github.com/$OWNER/$DATA_REPO.git out
+          mkdir -p data
+          cp -f out/*.csv data/ 2>/dev/null || true
+
       - name: Run pipeline
         run: |
           python main.py
+
+      - name: Publish updated data back to data repo
+        env:
+          TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          OWNER: bcorrv
+          DATA_REPO: investmentlab-data
+        run: |
+          cp -f data/*.csv out/ 2>/dev/null || true
+          cd out
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add *.csv || true
+          git commit -m "Update macro data" || echo "No changes"
+          git push
 
       - name: Publish snapshot to data repo
         env:

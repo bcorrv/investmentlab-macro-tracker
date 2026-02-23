@@ -1,227 +1,368 @@
 from __future__ import annotations
 
-import streamlit as st
-import pandas as pd
+import math
+from datetime import date
 
+import pandas as pd
+import streamlit as st
+
+# Tu proyecto ya usa esto (lo estás llamando desde esta página)
 from utils_data import load_snapshot, load_run_summary
 
 
-# -------------------------
-# CONFIG UI
-# -------------------------
-st.set_page_config(page_title="Rent + Hotel", layout="wide", initial_sidebar_state="expanded")
+# -----------------------------
+# Helpers financieros (simples)
+# -----------------------------
+def npv(rate: float, cashflows: list[float]) -> float:
+    """NPV con cashflows donde cashflows[0] es hoy (t=0). rate en decimal."""
+    if rate <= -1:
+        return float("nan")
+    total = 0.0
+    for t, cf in enumerate(cashflows):
+        total += cf / ((1.0 + rate) ** t)
+    return total
+
+
+def safe_float(x, default=0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def fmt_pct(x: float) -> str:
+    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+        return "—"
+    return f"{x*100:.2f}%"
+
+
+def fmt_num(x: float) -> str:
+    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+        return "—"
+    return f"{x:,.2f}"
+
+
+# -----------------------------
+# App
+# -----------------------------
+st.set_page_config(page_title="Panel Rent + Hotel", layout="wide")
+
 st.title("🏢 Panel Inmobiliario — Renting + Hotel")
-st.caption("Marco práctico: régimen macro → hurdle proxy → implicancias para renta y hotelería.")
+st.caption("Marco práctico: régimen macro → hurdle proxy → disciplina de inversión (no reemplaza underwriting completo).")
 
-
-# -------------------------
-# LOAD DATA
-# -------------------------
 df = load_snapshot()
-summary = load_run_summary()
+run_summary = load_run_summary()
 
-df = df.copy()
-df["fecha"] = pd.to_datetime(df["fecha"])
-df = df.sort_values("fecha")
+# Normaliza tipos
+df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
 
-required_cols = ["usd_clp", "uf", "tpm", "dxy"]
-missing = [c for c in required_cols if c not in df.columns]
-if missing:
-    st.error(f"Faltan columnas en daily_snapshot.csv: {missing}. Revisa main.py para incluirlas.")
+# Info de run (si existe)
+colA, colB = st.columns([2, 3])
+with colA:
+    st.write(f"**Datos:** {run_summary.get('data_url','(local)')}")
+with colB:
+    st.write(
+        f"**Último run (UTC):** {run_summary.get('pipeline_run_utc','—')}  |  "
+        f"**versión:** {run_summary.get('pipeline_version','—')}"
+    )
+
+# Rango global disponible
+min_date: date = df["fecha"].min()
+max_date: date = df["fecha"].max()
+
+# Sidebar: supuestos
+st.sidebar.header("Supuestos (ajustables)")
+
+spread_rent = st.sidebar.slider("Spread sobre TPM (Renting)", 0.0, 8.0, 3.0, 0.25)
+spread_hotel = st.sidebar.slider("Spread sobre TPM (Hotel)", 0.0, 12.0, 5.0, 0.25)
+
+st.sidebar.divider()
+st.sidebar.header("Targets (para lectura)")
+
+cap_rate_target = st.sidebar.slider("Cap Rate target (Renting)", 3.0, 12.0, 7.0, 0.25)
+margen_ebitda_target = st.sidebar.slider("Margen EBITDA Hotel target", 10, 60, 28, 1)
+
+st.sidebar.caption("Tip: estos targets no son “verdad”, son tu referencia para decidir y comparar.")
+
+# Selector rango
+st.subheader("Rango de análisis")
+start, end = st.date_input(
+    "Rango (ajustable)",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date,
+)
+
+if isinstance(start, tuple) or isinstance(start, list):
+    # Por si Streamlit devuelve tuplas (raro)
+    start, end = start[0], start[1]
+
+mask = (df["fecha"] >= start) & (df["fecha"] <= end)
+d = df.loc[mask].copy()
+
+if d.empty:
+    st.error("El rango seleccionado no tiene datos.")
     st.stop()
 
-last = df.iloc[-1]
-last_date = last["fecha"].date()
+# Última fila (estado actual)
+last = d.iloc[-1]
+last_date = last["fecha"]
 
-usd = float(last["usd_clp"])
-uf = float(last["uf"])
-tpm = float(last["tpm"])
-dxy = float(last["dxy"])
+usd = safe_float(last.get("usd_clp"))
+uf = safe_float(last.get("uf"))
+tpm = safe_float(last.get("tpm")) / 100.0 if safe_float(last.get("tpm")) > 1 else safe_float(last.get("tpm"))  # tolerante
+dxy = safe_float(last.get("dxy"))
+
+# MA30 (si existe en snapshot)
+ma30 = safe_float(last.get("usd_ma30"), default=float("nan"))
+usd_above = bool(last.get("usd_above_ma30")) if "usd_above_ma30" in last else (usd > ma30 if not math.isnan(ma30) else False)
+
+# Momentum DXY (20 días) si hay data suficiente
+dxy_mom_20 = None
+if "dxy" in d.columns and d["dxy"].notna().sum() > 25:
+    dd = d.dropna(subset=["dxy"]).copy()
+    if len(dd) > 21:
+        dxy_mom_20 = (dd["dxy"].iloc[-1] / dd["dxy"].iloc[-21] - 1.0)
+
+# Hurdles proxy (TPM + spread)
+hurdle_rent = tpm + (spread_rent / 100.0)
+hurdle_hotel = tpm + (spread_hotel / 100.0)
+
+# Régimen simple (ejemplo disciplinario)
+signals = []
+signals.append(f"USD vs MA30: {'arriba' if usd_above else 'abajo'} (MA30 ≈ {fmt_num(ma30)} si disponible)")
+if dxy_mom_20 is not None:
+    signals.append(f"DXY momentum (20d): {dxy_mom_20*100:.2f}%")
+signals.append(f"TPM nivel: {tpm*100:.2f}%")
+
+# regla simple para etiqueta de régimen
+score = 0
+score += 1 if usd_above else -1
+if dxy_mom_20 is not None:
+    score += 1 if dxy_mom_20 > 0 else -1
+
+if score >= 2:
+    regime = "RISK-ON (USD fuerte)"
+elif score <= -2:
+    regime = "RISK-OFF (USD débil / alivio)"
+else:
+    regime = "NEUTRAL"
 
 
-# -------------------------
-# SIDEBAR: ASSUMPTIONS
-# -------------------------
-with st.sidebar:
-    st.subheader("Supuestos (ajustables)")
+# -----------------------------
+# Resumen ejecutivo
+# -----------------------------
+st.subheader("Resumen Ejecutivo (Renting + Hotel)")
 
-    spread_renting = st.slider("Spread sobre TPM (Renting)", 1.0, 8.0, 3.0, 0.25)
-    spread_hotel = st.slider("Spread sobre TPM (Hotel)", 2.0, 10.0, 5.0, 0.25)
-
-    st.divider()
-
-    st.subheader("Targets (para lectura)")
-    cap_rate_target = st.slider("Cap Rate target (Renting)", 4.0, 12.0, 7.0, 0.25)
-    hotel_ebitda_margin = st.slider("Margen EBITDA Hotel target", 10, 45, 28, 1)
-
-    st.divider()
-    st.caption("Tip: estos targets no son “verdad”, son tu referencia para decidir y comparar.")
-
-
-# -------------------------
-# KPI HEADER
-# -------------------------
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Fecha", str(last_date))
 c2.metric("USD/CLP", f"{usd:,.2f}")
 c3.metric("UF", f"{uf:,.2f}")
-c4.metric("TPM", f"{tpm:.2f}%")
-c5.metric("DXY", f"{dxy:.2f}")
+c4.metric("TPM", f"{tpm*100:.2f}%")
+c5.metric("DXY", f"{dxy:,.2f}")
 
-if summary:
-    st.caption(f"Último run (UTC): {summary.get('pipeline_run_utc', '—')} | versión: {summary.get('pipeline_version', '—')}")
+c6, c7, c8 = st.columns([1, 1, 2])
+c6.metric("Hurdle Proxy Renting", f"{hurdle_rent*100:.2f}%")
+c7.metric("Hurdle Proxy Hotel", f"{hurdle_hotel*100:.2f}%")
 
+with c8:
+    st.markdown(f"### 🟡 Régimen: **{regime}**")
+    st.write("**Señales:**")
+    for s in signals:
+        st.write(f"- {s}")
 
-# -------------------------
-# SIGNALS / REGIME
-# -------------------------
-# USD vs MA30
-tmp = df.dropna(subset=["usd_clp"]).copy()
-tmp["usd_ma30"] = tmp["usd_clp"].rolling(30).mean()
-usd_ma30 = float(tmp.iloc[-1]["usd_ma30"]) if len(tmp) >= 30 else None
-usd_above_ma30 = bool(usd_ma30 is not None and usd > usd_ma30)
+st.caption("Hurdle proxy = TPM + spread (disciplina rápida). No reemplaza underwriting completo.")
 
-# DXY momentum (20d)
-tmp2 = df.dropna(subset=["dxy"]).copy()
-tmp2["dxy_ret20"] = tmp2["dxy"].pct_change(20) * 100
-dxy_ret20 = float(tmp2.iloc[-1]["dxy_ret20"]) if len(tmp2) >= 21 else 0.0
-
-# TPM level heuristic
-tpm_high = tpm >= 6.0
-tpm_mid = 4.0 <= tpm < 6.0
-
-# Define regime (simple & explainable)
-risk_off_signals = 0
-risk_on_signals = 0
-
-if not usd_above_ma30:
-    risk_off_signals += 1
-else:
-    risk_on_signals += 1
-
-if dxy_ret20 > 2.0:
-    risk_off_signals += 1
-elif dxy_ret20 < -2.0:
-    risk_on_signals += 1
-
-if tpm_high:
-    risk_off_signals += 1
-elif not tpm_mid:
-    risk_on_signals += 1
-
-if risk_off_signals >= 2:
-    regime = "RISK-OFF"
-    regime_color = "🔴"
-elif risk_on_signals >= 2:
-    regime = "RISK-ON"
-    regime_color = "🟢"
-else:
-    regime = "NEUTRAL"
-    regime_color = "🟡"
+# -----------------------------
+# Tabs: Renting / Hotel + Simulador
+# -----------------------------
+tab_rent, tab_hotel, tab_sim = st.tabs(["Renting (Renta)", "Hotel (Inversión hotelera)", "Simulador (Decisión)"])
 
 
-# -------------------------
-# HURDLE PROXY
-# -------------------------
-hurdle_renting = tpm + spread_renting
-hurdle_hotel = tpm + spread_hotel
+with tab_rent:
+    st.markdown("## Renting — Riesgo macro que mueve yields y demanda")
+    st.write(
+        "Lectura: si sube costo de capital (TPM), suele presionar cap rates (yields). "
+        "USD/CLP y DXY te ayudan a separar componente global vs local."
+    )
 
-st.divider()
+    # Serie base 100: USD vs DXY
+    if "dxy" in d.columns and d["dxy"].notna().any():
+        base_usd = d["usd_clp"].iloc[0]
+        base_dxy = d["dxy"].dropna().iloc[0] if d["dxy"].dropna().shape[0] > 0 else None
 
-r1, r2, r3 = st.columns([1, 1, 2])
-r1.metric("Hurdle Proxy Renting", f"{hurdle_renting:.2f}%")
-r2.metric("Hurdle Proxy Hotel", f"{hurdle_hotel:.2f}%")
-r3.markdown(
-    f"""
-### {regime_color} Régimen: **{regime}**
+        plot_df = d.copy()
+        plot_df["usd_base100"] = (plot_df["usd_clp"] / base_usd) * 100.0
+        if base_dxy is not None:
+            plot_df["dxy_base100"] = (plot_df["dxy"] / base_dxy) * 100.0
 
-**Señales:**
-- USD vs MA30: **{"arriba" if usd_above_ma30 else "abajo"}** (MA30 ≈ {usd_ma30:,.2f} si disponible)
-- DXY momentum (20d): **{dxy_ret20:.2f}%**
-- TPM nivel: **{tpm:.2f}%**
-"""
-)
-
-st.caption("Hurdle proxy = referencia rápida para disciplina (no reemplaza underwriting completo).")
-
-
-# -------------------------
-# RECOMMENDATIONS (actionable)
-# -------------------------
-st.subheader("Qué cambia según régimen (acciones concretas)")
-
-colA, colB = st.columns(2)
-
-with colA:
-    st.markdown("### 🏘️ Renting (renta)")
-    if regime == "RISK-OFF":
-        st.write(
-            "- Prioriza **calidad y liquidez** (ubicación prime, demanda estable).\n"
-            "- Subir exigencia de **cap rate** / bajar precio objetivo.\n"
-            "- **Más caja** y cláusulas defensivas (vacancia, reajustes, seguros).\n"
-            "- No asumas compresión de tasas; modela escenario de tasas altas por más tiempo."
+        st.line_chart(
+            plot_df.set_index("fecha")[["usd_base100"] + (["dxy_base100"] if "dxy_base100" in plot_df else [])]
         )
-    elif regime == "RISK-ON":
-        st.write(
-            "- Puedes tolerar **más duration** (compras con upside a mediano plazo).\n"
-            "- Evalúa activos con **mejoras operativas** (reposición, optimización de renta).\n"
-            "- Más sentido a proyectos con **reversión** y capex planificado.\n"
-            "- Aun así: no bajes el hurdle por entusiasmo; compáralo contra tu target."
-        )
+
+    # TPM y hurdle
+    if "tpm" in d.columns:
+        tmp = d.copy()
+        tmp["tpm_pct"] = tmp["tpm"]
+        tmp["hurdle_rent_pct"] = tmp["tpm_pct"] + spread_rent
+        st.line_chart(tmp.set_index("fecha")[["tpm_pct", "hurdle_rent_pct"]])
+
+    st.info(
+        "Idea práctica: cuando TPM sube, tu disciplina debería exigir **más yield/cap rate** o **mejor calidad**. "
+        "Evita “cap rates mágicos” sin prima por riesgo."
+    )
+
+
+with tab_hotel:
+    st.markdown("## Hotel — Inversión hotelera (unidad económica)")
+    st.write(
+        "Hotel no es sólo cap rate. Es: ocupación, ADR, margen, estacionalidad, FX y estructura de deuda. "
+        "Aquí el hurdle proxy te fuerza disciplina antes del Excel pesado."
+    )
+
+    st.write(f"Referencia target margen EBITDA (solo guía): **{margen_ebitda_target}%**")
+    st.write("Checklist rápido:")
+    st.write("- ¿El FX (USD/CLP) te mejora costos o te los empeora?")
+    st.write("- ¿El costo de deuda (TPM + spread) te mata el DSCR?")
+    st.write("- ¿Tu upside depende de macro o de operación (ADR/ocupación/margen)?")
+
+    # Quick charts
+    left, right = st.columns(2)
+
+    with left:
+        st.caption("USD/CLP + MA30 (últimos 180 días del rango)")
+        dd = d.tail(180).copy()
+        cols = ["usd_clp"] + (["usd_ma30"] if "usd_ma30" in dd.columns else [])
+        st.line_chart(dd.set_index("fecha")[cols])
+
+    with right:
+        st.caption("DXY (últimos 180 días del rango)")
+        if "dxy" in d.columns:
+            st.line_chart(d.tail(180).set_index("fecha")[["dxy"]])
+
+
+with tab_sim:
+    st.markdown("## Simulador simple — Decisión de inversión (Hotel)")
+    st.caption("Modelo simple: deuda bullet (se paga al final), interés anual, cashflows anuales constantes.")
+
+    # Inputs
+    i1, i2, i3 = st.columns(3)
+    with i1:
+        capex = st.number_input("CAPEX total (USD)", min_value=0.0, value=10_000_000.0, step=250_000.0, format="%.2f")
+        ebitda = st.number_input("EBITDA anual estabilizado (USD)", min_value=0.0, value=1_600_000.0, step=50_000.0, format="%.2f")
+        years = st.number_input("Horizonte (años)", min_value=3, max_value=20, value=10, step=1)
+
+    with i2:
+        debt_pct = st.slider("% Deuda", 0, 80, 55, 5)
+        spread_debt = st.slider("Spread deuda sobre TPM (bps)", 0, 900, 400, 25)  # 400 bps = 4.00%
+        discount = st.slider("Discount rate (hurdle) (%)", 0.0, 25.0, float(hurdle_hotel * 100.0), 0.25)
+
+    with i3:
+        exit_method = st.selectbox("Salida", ["Multiple EBITDA", "Cap rate sobre EBITDA"], index=0)
+        if exit_method == "Multiple EBITDA":
+            exit_multiple = st.slider("Exit multiple (x EBITDA)", 4.0, 20.0, 10.0, 0.25)
+            exit_cap = None
+        else:
+            exit_cap = st.slider("Exit cap rate (%)", 4.0, 15.0, 9.0, 0.25)
+            exit_multiple = None
+
+        tax = st.slider("Impuesto efectivo (proxy) (%)", 0.0, 35.0, 0.0, 1.0)
+
+    # Cálculos
+    debt = capex * (debt_pct / 100.0)
+    equity = capex - debt
+
+    # tasa deuda
+    debt_rate = tpm + (spread_debt / 10_000.0)  # bps -> decimal
+    disc_rate = discount / 100.0
+    tax_rate = tax / 100.0
+
+    # cashflow anual (equity) – simplificado
+    ebitda_after_tax = ebitda * (1.0 - tax_rate)
+    interest = debt * debt_rate
+    cf_annual = ebitda_after_tax - interest
+
+    # DSCR (muy simplificado: EBITDA / interés)
+    dscr = (ebitda / interest) if interest > 0 else float("inf")
+
+    # exit value
+    if exit_method == "Multiple EBITDA":
+        exit_value = ebitda * exit_multiple
     else:
-        st.write(
-            "- Mantén disciplina: **buen underwriting** y escenarios.\n"
-            "- Foco en activos con **asimetría**: downside contenido, upside real.\n"
-            "- Ajusta spreads con datos (banco, spreads reales, vacancia)."
-        )
+        exit_value = ebitda / (exit_cap / 100.0) if exit_cap and exit_cap > 0 else float("nan")
 
-    st.caption(f"Referencia target cap rate: {cap_rate_target:.2f}% (solo guía).")
+    exit_equity = exit_value - debt  # paga principal al final
 
-with colB:
-    st.markdown("### 🏨 Hotel (inversión hotelera)")
-    if regime == "RISK-OFF":
-        st.write(
-            "- Prioriza **resiliencia**: ADR defendible, demanda menos cíclica.\n"
-            "- Exige **más margen** y más holgura de caja.\n"
-            "- Reduce apalancamiento y fija tasas si es posible.\n"
-            "- En expansiones: gate duro de permisos/capex; evita sobre-optimismo en ramp-up."
-        )
-    elif regime == "RISK-ON":
-        st.write(
-            "- Ventana para **capturar upside**: pricing power, demanda leisure.\n"
-            "- Proyectos con capex bien controlado + narrativa comercial clara.\n"
-            "- En operaciones: empuja RevPAR, paquetes, mix de canales.\n"
-            "- Ojo: en hotel, el riesgo operativo no desaparece porque baje la tasa."
-        )
+    # NPV equity
+    cashflows = [-equity] + [cf_annual] * (int(years) - 1) + [cf_annual + exit_equity]
+    npv_equity = npv(disc_rate, cashflows)
+
+    # Métricas rápidas
+    unlevered_yield = (ebitda / capex) if capex > 0 else float("nan")
+    cash_yield = (cf_annual / equity) if equity > 0 else float("nan")
+
+    # Sensibilidades ±100 bps
+    npv_disc_up = npv(disc_rate + 0.01, cashflows)
+    npv_disc_dn = npv(max(disc_rate - 0.01, -0.99), cashflows)
+
+    # Sensibilidad deuda (sube 100 bps)
+    cf_annual_up_debt = ebitda_after_tax - (debt * (debt_rate + 0.01))
+    cashflows_up_debt = [-equity] + [cf_annual_up_debt] * (int(years) - 1) + [cf_annual_up_debt + exit_equity]
+    npv_debt_up = npv(disc_rate, cashflows_up_debt)
+
+    # Output
+    o1, o2, o3, o4 = st.columns(4)
+    o1.metric("Equity (USD)", fmt_num(equity))
+    o2.metric("Deuda (USD)", fmt_num(debt))
+    o3.metric("Tasa deuda (TPM+spread)", f"{debt_rate*100:.2f}%")
+    o4.metric("Discount (hurdle)", f"{disc_rate*100:.2f}%")
+
+    o5, o6, o7, o8 = st.columns(4)
+    o5.metric("Unlevered yield (EBITDA/CAPEX)", fmt_pct(unlevered_yield))
+    o6.metric("Cash yield equity (CF/Equity)", fmt_pct(cash_yield))
+    o7.metric("DSCR (EBITDA/Interés)", f"{dscr:.2f}x" if math.isfinite(dscr) else "∞")
+    o8.metric("Exit equity (USD)", fmt_num(exit_equity))
+
+    st.divider()
+
+    st.subheader("Resultado (proxy)")
+    r1, r2, r3 = st.columns([1, 1, 2])
+    r1.metric("NPV Equity (USD)", fmt_num(npv_equity))
+    r2.metric("CF anual equity (USD)", fmt_num(cf_annual))
+    with r3:
+        st.write("Sensibilidades (NPV equity):")
+        st.write(f"- Discount +100 bps: **{fmt_num(npv_disc_up)}**")
+        st.write(f"- Discount -100 bps: **{fmt_num(npv_disc_dn)}**")
+        st.write(f"- Deuda +100 bps: **{fmt_num(npv_debt_up)}**")
+
+    # Interpretación mínima (disciplina)
+    st.divider()
+    st.subheader("Lectura rápida (disciplina)")
+
+    bullets = []
+    if npv_equity > 0:
+        bullets.append("✅ NPV equity positivo al hurdle elegido → pasa primer filtro.")
     else:
-        st.write(
-            "- Mantén foco en **unidad económica**: margen, costos fijos, sensibilidad a ocupación.\n"
-            "- Diseña estructura financiera con escenarios (ocupación, ADR, FX).\n"
-            "- Decide por calidad de activos, no por “sentimiento macro”."
-        )
+        bullets.append("🛑 NPV equity negativo al hurdle → no compensa riesgo (o ajusta precio/operación/estructura).")
 
-    st.caption(f"Referencia target margen EBITDA hotel: {hotel_ebitda_margin}% (solo guía).")
+    if dscr < 1.3:
+        bullets.append("⚠️ DSCR bajo (<1.3x) → estructura de deuda agresiva para hotel (sube equity o baja tasa).")
+    else:
+        bullets.append("✅ DSCR razonable (≥1.3x) para proxy → deuda más defendible.")
 
+    if cash_yield < disc_rate:
+        bullets.append("⚠️ Cash yield < hurdle → dependes demasiado del exit/optimismo.")
+    else:
+        bullets.append("✅ Cash yield ≥ hurdle → retorno se sostiene mejor sin “rezar por el exit”.")
 
-# -------------------------
-# CHARTS (simple, readable)
-# -------------------------
-st.divider()
-st.subheader("Gráficos rápidos (contexto)")
+    for b in bullets:
+        st.write(f"- {b}")
 
-g1, g2 = st.columns(2)
+    st.caption(
+        "Nota: este simulador es intencionalmente simple (constante, deuda bullet). "
+        "Sirve para disciplina y conversación, no para IC final."
+    )
 
-with g1:
-    st.markdown("**USD/CLP + MA30 (últimos 180 días)**")
-    d = df.tail(180).copy()
-    d["usd_ma30"] = d["usd_clp"].rolling(30).mean()
-    st.line_chart(d.set_index("fecha")[["usd_clp", "usd_ma30"]])
-
-with g2:
-    st.markdown("**DXY (últimos 180 días)**")
-    d = df.tail(180).copy()
-    st.line_chart(d.set_index("fecha")[["dxy"]])
-
-st.divider()
-with st.expander("Ver tabla (últimas 200 filas)"):
-    st.dataframe(df.tail(200), use_container_width=True)
+# Diagnóstico opcional
+with st.expander("Ver tabla del período (últimas 50 filas)"):
+    st.dataframe(d.tail(50), use_container_width=True)

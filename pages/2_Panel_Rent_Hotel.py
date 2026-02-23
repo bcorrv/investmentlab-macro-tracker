@@ -459,9 +459,9 @@ with tab_sim:
 
     # Rango de exit cap ±150 bps si es cap rate
     if exit_method == "Cap rate sobre EBITDA":
-        exit_range = np.linspace((exit_cap - 1.5), (exit_cap + 1.5), 10)
+        exit_range = np.linspace((exit_cap_adj - 1.5), (exit_cap_adj + 1.5), 10)
     else:
-        exit_range = np.linspace((exit_multiple - 2), (exit_multiple + 2), 10)
+        exit_range = np.linspace((exit_multiple_adj - 2), (exit_multiple_adj + 2), 10)
 
     heat_data = []
 

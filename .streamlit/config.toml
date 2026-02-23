@@ -1,0 +1,7 @@
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+
+[client]
+showSidebarNavigation = true

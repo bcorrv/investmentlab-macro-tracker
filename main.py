@@ -301,25 +301,40 @@ def check_rate_change(df: pd.DataFrame, value_name: str, indicator: str) -> None
 # =========================
 # SNAPSHOT
 # =========================
-def build_daily_snapshot(dolar_df: pd.DataFrame, uf_df: pd.DataFrame, tpm_df: pd.DataFrame) -> pd.DataFrame:
+def build_daily_snapshot(
+    dolar_df: pd.DataFrame,
+    uf_df: pd.DataFrame,
+    tpm_df: pd.DataFrame,
+    dxy_df: pd.DataFrame,
+) -> pd.DataFrame:
     usd = dolar_df.copy()
     uf = uf_df.copy()
     tpm = tpm_df.copy()
+    dxy = dxy_df.copy()
 
     usd["fecha"] = pd.to_datetime(usd["fecha"])
     uf["fecha"] = pd.to_datetime(uf["fecha"])
     tpm["fecha"] = pd.to_datetime(tpm["fecha"])
+    dxy["fecha"] = pd.to_datetime(dxy["fecha"])
 
     usd = usd.sort_values("fecha")
     usd["usd_pct_change"] = usd["usd_clp"].pct_change() * 100
     usd["usd_ma30"] = usd["usd_clp"].rolling(30).mean()
     usd["usd_above_ma30"] = usd["usd_clp"] > usd["usd_ma30"]
 
-    df = usd.merge(uf, on="fecha", how="left").merge(tpm, on="fecha", how="left")
+    # Merge en base a fechas de USD
+    df = (
+        usd.merge(uf, on="fecha", how="left")
+           .merge(tpm, on="fecha", how="left")
+           .merge(dxy, on="fecha", how="left")
+    )
+
+    # Rellenos típicos
     df["uf"] = df["uf"].ffill()
     df["tpm"] = df["tpm"].ffill()
+    df["dxy"] = df["dxy"].ffill()
 
-    df.to_csv(SNAPSHOT_PATH, index=False)
+    df.to_csv(SNAPSHOT_PATH, index=False, encoding="utf-8")
     return df
 
 
@@ -340,7 +355,7 @@ def main() -> None:
         log_line(run_log, f"OK {ind}: {len(df)} filas (status={statuses.get(ind)})")
 
     # 2) Snapshot consolidado
-    snapshot = build_daily_snapshot(dfs["dolar"], dfs["uf"], dfs["tpm"])
+    snapshot = build_daily_snapshot(dfs["dolar"], dfs["uf"], dfs["tpm"], dfs["dxy"])
     log_line(run_log, f"OK snapshot: {len(snapshot)} filas → {SNAPSHOT_PATH}")
 
     # 3) Señales/alertas

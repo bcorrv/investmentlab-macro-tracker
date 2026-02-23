@@ -22,6 +22,52 @@ def npv(rate: float, cashflows: list[float]) -> float:
         total += cf / ((1.0 + rate) ** t)
     return total
 
+def irr(cashflows: list[float], guess: float = 0.12) -> float:
+    """
+    IRR por Newton-Raphson.
+    Retorna tasa en decimal (0.15 = 15%).
+    """
+    # Evita casos imposibles
+    if not cashflows or (max(cashflows) <= 0) or (min(cashflows) >= 0):
+        return float("nan")
+
+    r = guess
+    for _ in range(200):
+        # NPV y derivada
+        f = 0.0
+        df = 0.0
+        for t, cf in enumerate(cashflows):
+            denom = (1.0 + r) ** t
+            f += cf / denom
+            if t > 0:
+                df -= t * cf / ((1.0 + r) ** (t + 1))
+
+        if abs(df) < 1e-12:
+            return float("nan")
+
+        r_new = r - f / df
+
+        # Convergencia
+        if abs(r_new - r) < 1e-8:
+            return r_new
+
+        # Evita explotar
+        if r_new <= -0.9999 or r_new > 10:
+            return float("nan")
+
+        r = r_new
+
+    return float("nan")
+
+
+def calc_wacc(cost_of_equity: float, cost_of_debt: float, debt_pct: float, tax_rate: float) -> float:
+    """
+    WACC = E/V*Re + D/V*Rd*(1-T)
+    inputs en decimal (0.12=12%)
+    """
+    d = max(0.0, min(1.0, debt_pct))
+    e = 1.0 - d
+    return e * cost_of_equity + d * cost_of_debt * (1.0 - tax_rate)
 
 def safe_float(x, default=0.0) -> float:
     try:
@@ -256,6 +302,7 @@ with tab_sim:
         debt_pct = st.slider("% Deuda", 0, 80, 55, 5)
         spread_debt = st.slider("Spread deuda sobre TPM (bps)", 0, 900, 400, 25)  # 400 bps = 4.00%
         discount = st.slider("Discount rate (hurdle) (%)", 0.0, 25.0, float(hurdle_hotel * 100.0), 0.25)
+        cost_equity = st.slider("Costo de Equity (Re) (%)", 6.0, 30.0, 16.0, 0.25)
 
     with i3:
         exit_method = st.selectbox("Salida", ["Multiple EBITDA", "Cap rate sobre EBITDA"], index=0)
@@ -271,6 +318,12 @@ with tab_sim:
     # Cálculos
     debt = capex * (debt_pct / 100.0)
     equity = capex - debt
+    re = cost_equity / 100.0
+    rd = debt_rate
+    tax_rate = tax / 100.0
+    d_pct = debt_pct / 100.0
+
+    wacc = calc_wacc(re, rd, d_pct, tax_rate)
 
     # tasa deuda
     debt_rate = tpm + (spread_debt / 10_000.0)  # bps -> decimal
@@ -281,6 +334,11 @@ with tab_sim:
     ebitda_after_tax = ebitda * (1.0 - tax_rate)
     interest = debt * debt_rate
     cf_annual = ebitda_after_tax - interest
+    irr_equity = irr(cashflows, guess=disc_rate if disc_rate > 0 else 0.12)
+
+    # Unlevered: sin deuda -> CF = EBITDA after tax, inversión = -CAPEX, exit = exit_value
+    ashflows_unlev = [-capex] + [ebitda_after_tax] * (int(years) - 1) + [ebitda_after_tax + exit_value]
+    irr_unlev = irr(cashflows_unlev, guess=disc_rate if disc_rate > 0 else 0.12)
 
     # DSCR (muy simplificado: EBITDA / interés)
     dscr = (ebitda / interest) if interest > 0 else float("inf")
@@ -316,6 +374,10 @@ with tab_sim:
     o2.metric("Deuda (USD)", fmt_num(debt))
     o3.metric("Tasa deuda (TPM+spread)", f"{debt_rate*100:.2f}%")
     o4.metric("Discount (hurdle)", f"{disc_rate*100:.2f}%")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("WACC (proxy)", f"{wacc*100:.2f}%")
+    m2.metric("IRR Equity", "—" if math.isnan(irr_equity) else f"{irr_equity*100:.2f}%")
+    m3.metric("IRR Unlevered", "—" if math.isnan(irr_unlev) else f"{irr_unlev*100:.2f}%")
 
     o5, o6, o7, o8 = st.columns(4)
     o5.metric("Unlevered yield (EBITDA/CAPEX)", fmt_pct(unlevered_yield))

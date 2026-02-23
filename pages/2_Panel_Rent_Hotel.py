@@ -335,13 +335,46 @@ with tab_sim:
         cost_equity = st.slider("Costo de Equity (Re) (%)", 6.0, 30.0, 16.0, 0.25)
         discount = st.slider("Discount rate (hurdle) (%)", 0.0, 25.0, float(hurdle_hotel * 100.0), 0.25)
 
+       # --- Exit base (input usuario) ---
         exit_method = st.selectbox("Salida", ["Multiple EBITDA", "Cap rate sobre EBITDA"], index=0)
+
         if exit_method == "Multiple EBITDA":
-            exit_multiple = st.slider("Exit multiple (x EBITDA)", 4.0, 20.0, 10.0, 0.25)
-            exit_cap = None
+            exit_multiple_base = st.slider("Exit multiple (x EBITDA)", 4.0, 20.0, 10.0, 0.25)
+            exit_cap_base = None
         else:
-            exit_cap = st.slider("Exit cap rate (%)", 4.0, 15.0, 9.0, 0.25)
-            exit_multiple = None
+            exit_cap_base = st.slider("Exit cap rate (%)", 4.0, 15.0, 9.0, 0.25)
+            exit_multiple_base = None
+
+        # --- Macro link ---
+        macro_link = st.checkbox("Vincular Exit a TPM automáticamente", value=True)
+
+        tpm_neutral = 4.0         # tasa considerada neutral
+        exit_sensitivity = 0.25   # cuánto se mueve el cap rate por cada 1% TPM extra
+
+        if macro_link:
+            if exit_method == "Cap rate sobre EBITDA":
+                exit_cap_adj = exit_cap_base + (tpm - tpm_neutral) * exit_sensitivity
+                exit_multiple_adj = None
+            else:
+                exit_multiple_adj = exit_multiple_base - (tpm - tpm_neutral) * 0.5
+                exit_cap_adj = None
+        else:
+            exit_cap_adj = exit_cap_base
+            exit_multiple_adj = exit_multiple_base
+
+        # --- Visualización del ajuste macro ---
+        if macro_link:
+            if exit_method == "Cap rate sobre EBITDA":
+                st.caption(f"Exit cap ajustado por macro: {exit_cap_adj:.2f}%")
+            else:
+                st.caption(f"Exit multiple ajustado por macro: {exit_multiple_adj:.2f}x")
+
+
+        # --- Rango para heatmap ---
+        if exit_method == "Cap rate sobre EBITDA":
+            exit_range = np.linspace((exit_cap_adj - 1.5), (exit_cap_adj + 1.5), 10)
+        else:
+            exit_range = np.linspace((exit_multiple_adj - 2), (exit_multiple_adj + 2), 10)
 
     # -----------------------
     # Cálculos (orden fijo)

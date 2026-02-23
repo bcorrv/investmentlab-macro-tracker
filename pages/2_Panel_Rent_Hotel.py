@@ -519,17 +519,14 @@ with tab_sim:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Contorno — NPV Equity (línea de break-even)")
-
     import plotly.graph_objects as go
     import numpy as np
 
-    st.subheader("Contorno — Break-even (NPV = 0)")
+    st.subheader("Mapa NPV Equity + Break-even (NPV = 0)")
 
-    # Pivot explícito (asegura formato correcto)
+    # Pivot limpio
     pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV")
 
-    # Forzar numéricos
     pivot.index = pd.to_numeric(pivot.index, errors="coerce")
     pivot.columns = pd.to_numeric(pivot.columns, errors="coerce")
 
@@ -540,8 +537,23 @@ with tab_sim:
     X = pivot.columns.values.astype(float)
     Y = pivot.index.values.astype(float)
 
-    figc = go.Figure(
-        data=go.Contour(
+    fig = go.Figure()
+
+    # Heatmap
+    fig.add_trace(
+        go.Heatmap(
+            z=Z,
+            x=X,
+            y=Y,
+            colorscale="RdYlGn",
+            colorbar=dict(title="NPV Equity"),
+            hovertemplate="EBITDA=%{y:,.0f}<br>Exit=%{x:.2f}<br>NPV=%{z:,.0f}<extra></extra>",
+        )
+    )
+
+    # Línea break-even (NPV = 0)
+    fig.add_trace(
+        go.Contour(
             z=Z,
             x=X,
             y=Y,
@@ -550,21 +562,22 @@ with tab_sim:
                 end=0,
                 size=1,
                 coloring="none",
-                showlabels=True
+                showlabels=False,
             ),
-            line=dict(width=3),
+            line=dict(color="black", width=3),
+            showscale=False,
         )
     )
 
-    figc.update_yaxes(autorange="reversed")
-    figc.update_layout(
+    fig.update_layout(
         xaxis_title="Exit",
         yaxis_title="EBITDA",
-        height=520
+        height=600,
     )
 
-    st.plotly_chart(figc, use_container_width=True)
-    figc.update_yaxes(autorange="reversed")
+    fig.update_yaxes(autorange="reversed")
+
+    st.plotly_chart(fig, use_container_width=True, key="npv_heatmap_overlay")
 
     # --- Heatmap IRR Equity ---
     heat_data_irr = []

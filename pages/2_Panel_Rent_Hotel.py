@@ -565,7 +565,6 @@ with tab_sim:
 
     st.plotly_chart(figc, use_container_width=True)
     figc.update_yaxes(autorange="reversed")
-    st.plotly_chart(figc, use_container_width=True)
 
     # --- Heatmap IRR Equity ---
     heat_data_irr = []

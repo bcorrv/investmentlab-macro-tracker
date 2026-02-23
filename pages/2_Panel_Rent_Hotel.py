@@ -450,55 +450,23 @@ with tab_sim:
     st.divider()
     st.subheader("Mapa de Sensibilidad — NPV Equity")
 
-    import plotly.express as px
-
     # -----------------------------
-    # Sensibilidad dinámica (siempre incluye break-even)
+    # Rango robusto (económicamente lógico)
     # -----------------------------
 
-    def npv_at(e, ex):
-        if exit_method == "Cap rate sobre EBITDA":
-            ev = e / (ex / 100.0)
-        else:
-            ev = e * ex
+    # EBITDA ±25%
+    ebitda_range = np.linspace(ebitda * 0.75, ebitda * 1.25, 20)
 
-        exit_eq = ev - debt
-        cf = e * (1 - tax_rate) - (debt * debt_rate)
-
-        cfs = [-equity] + [cf] * (int(years) - 1) + [cf + exit_eq]
-        return npv(disc_rate, cfs)
-
-    # EBITDA dinámico
-    eb_low = ebitda
-    step = ebitda * 0.05
-
-    while npv_at(eb_low, exit_multiple_adj if exit_method == "Multiple EBITDA" else exit_cap_adj) > 0 and eb_low > 0:
-        eb_low -= step
-
-    eb_high = ebitda
-    while npv_at(eb_high, exit_multiple_adj if exit_method == "Multiple EBITDA" else exit_cap_adj) < 0:
-        eb_high += step
-
-    ebitda_range = np.linspace(eb_low, eb_high * 1.2, 20)
-
-    # Exit dinámico
     if exit_method == "Multiple EBITDA":
         ex_base = exit_multiple_adj
-        step_ex = 0.5
+        exit_min = max(3.0, ex_base - 4)
+        exit_max = ex_base + 4
     else:
         ex_base = exit_cap_adj
-        step_ex = 0.25
+        exit_min = max(4.0, ex_base - 2)
+        exit_max = ex_base + 2
 
-    ex_low = ex_base
-    ex_high = ex_base
-
-    while npv_at(ebitda, ex_low) > 0:
-        ex_low -= step_ex
-
-    while npv_at(ebitda, ex_high) < 0:
-        ex_high += step_ex
-
-    exit_range = np.linspace(ex_low, ex_high * 1.2, 20)
+    exit_range = np.linspace(exit_min, exit_max, 20)
 
     heat_data = []
 

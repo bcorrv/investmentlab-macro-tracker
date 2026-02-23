@@ -383,6 +383,9 @@ with tab_sim:
     irr_equity = irr(cashflows)
     irr_unlev = irr(cashflows_unlev)
 
+    unlevered_yield = (ebitda / capex) if capex > 0 else float("nan")
+    cash_yield = (cf_annual / equity) if equity > 0 else float("nan")
+
     dscr = (ebitda / interest) if interest > 0 else float("inf")
 
     # ----------------

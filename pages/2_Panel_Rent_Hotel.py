@@ -298,8 +298,33 @@ with tab_sim:
 
     with i1:
         capex = st.number_input("CAPEX total (USD)", min_value=0.0, value=10_000_000.0, step=250_000.0, format="%.2f")
-        ebitda = st.number_input("EBITDA anual estabilizado (USD)", min_value=0.0, value=1_600_000.0, step=50_000.0, format="%.2f")
         years = st.number_input("Horizonte (años)", min_value=3, max_value=20, value=10, step=1)
+
+        st.subheader("Modelo Operativo (deriva EBITDA)")
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        with c1:
+            rooms = st.number_input("Habitaciones", min_value=10, max_value=800, value=120, step=5)
+
+        with c2:
+            occ_pct = st.slider("Ocupación (%)", min_value=30.0, max_value=90.0, value=65.0, step=0.5)
+
+        with c3:
+            adr = st.number_input("ADR (USD)", min_value=50.0, max_value=3000.0, value=250.0, step=10.0)
+
+        with c4:
+            ebitda_margin_pct = st.slider("Margen EBITDA (%)", min_value=10.0, max_value=70.0, value=35.0, step=1.0)
+
+        occ = occ_pct / 100.0
+        ebitda_margin = ebitda_margin_pct / 100.0
+
+        revpar = adr * occ
+        revenue = revpar * rooms * 365.0
+        ebitda = revenue * ebitda_margin
+
+        st.caption("EBITDA = Habitaciones × Ocupación × ADR × 365 × Margen EBITDA")
+        st.metric("EBITDA derivado (USD/año)", f"{ebitda:,.0f}")
 
     with i2:
         debt_pct = st.slider("% Deuda", 0, 80, 55, 5)

@@ -361,6 +361,20 @@ with tab_sim:
 
     wacc = calc_wacc(re, rd, d_pct, tax_rate)
 
+    st.divider()
+    stress = st.checkbox("Stress macro (TPM +200 bps, Exit peor, EBITDA -10%)", value=False)
+
+    if stress:
+        debt_rate = debt_rate + 0.02  # +200 bps
+
+        if exit_method == "Cap rate sobre EBITDA" and exit_cap is not None:
+            exit_cap = exit_cap + 1.0  # +100 bps cap rate
+
+        if exit_method == "Multiple EBITDA" and exit_multiple is not None:
+            exit_multiple = max(exit_multiple - 1.0, 1.0)
+
+        ebitda = ebitda * 0.90  # -10% operativo
+
     # Flujo anual equity (simplificado)
     ebitda_after_tax = ebitda * (1.0 - tax_rate)
     interest = debt * debt_rate

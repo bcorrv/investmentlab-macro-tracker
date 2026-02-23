@@ -469,13 +469,13 @@ with tab_sim:
 
     heat_df = pd.DataFrame(heat_data)
 
-    fig = px.density_heatmap(
-        heat_df,
-        x="Exit",
-        y="EBITDA",
-        z="NPV",
+    pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV")
+
+    fig = px.imshow(
+        pivot,
         color_continuous_scale="RdYlGn",
-        title="Sensibilidad NPV Equity"
+        aspect="auto",
+        labels=dict(color="NPV Equity"),
     )
 
     st.plotly_chart(fig, use_container_width=True)

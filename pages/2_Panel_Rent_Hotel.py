@@ -521,6 +521,48 @@ with tab_sim:
 
     heat_df = pd.DataFrame(heat_data)
 
+    st.subheader("Mapa — NPV Unlevered (negocio sin deuda)")
+
+    pivot_u = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV_Unlevered")
+    pivot_u.index = pd.to_numeric(pivot_u.index, errors="coerce")
+    pivot_u.columns = pd.to_numeric(pivot_u.columns, errors="coerce")
+    pivot_u = pivot_u.sort_index()
+    pivot_u = pivot_u.loc[:, sorted(pivot_u.columns)]
+
+    Z_u = pivot_u.values.astype(float)
+    X_u = pivot_u.columns.values.astype(float)
+    Y_u = pivot_u.index.values.astype(float)
+
+    fig_u = go.Figure()
+
+    fig_u.add_trace(
+        go.Heatmap(
+            z=Z_u,
+            x=X_u,
+            y=Y_u,
+            colorscale="RdYlGn",
+            colorbar=dict(title="NPV Unlevered"),
+            hovertemplate="EBITDA=%{y:,.0f}<br>Exit=%{x:.2f}<br>NPV Unlev=%{z:,.0f}<extra></extra>",
+        )
+    )
+
+    # Break-even NPV=0 (unlevered)
+    fig_u.add_trace(
+        go.Contour(
+            z=Z_u,
+            x=X_u,
+            y=Y_u,
+            contours=dict(start=0, end=0, size=1, coloring="none"),
+            line=dict(color="black", width=3),
+            showscale=False,
+        )
+    )
+
+    fig_u.update_layout(xaxis_title="Exit", yaxis_title="EBITDA", height=600)
+    fig_u.update_yaxes(autorange="reversed")
+
+    st.plotly_chart(fig_u, use_container_width=True, key="npv_unlevered_overlay")
+
     pivot = heat_df.pivot(index="EBITDA", columns="Exit", values="NPV")
 
     fig = px.imshow(
